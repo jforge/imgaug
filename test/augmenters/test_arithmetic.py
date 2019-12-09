@@ -23,7 +23,8 @@ import imgaug as ia
 from imgaug import augmenters as iaa
 from imgaug import parameters as iap
 from imgaug import dtypes as iadt
-from imgaug.testutils import array_equal_lists, keypoints_equal, reseed
+from imgaug.testutils import (array_equal_lists, keypoints_equal, reseed,
+                              runtest_pickleable_uint8_img)
 import imgaug.augmenters.arithmetic as arithmetic_lib
 import imgaug.augmenters.contrast as contrast_lib
 
@@ -507,6 +508,10 @@ class TestAdd(unittest.TestCase):
                 assert image_aug.dtype.type == dtype
                 assert np.all(np.logical_and(-10 - 1e-2 < image_aug, image_aug < 10 + 1e-2))
                 assert not np.allclose(image_aug[:, :, 1:], image_aug[:, :, :-1])
+
+    def test_pickleable(self):
+        aug = iaa.Add((0, 50), per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
 
 
 class TestAddElementwise(unittest.TestCase):
@@ -997,6 +1002,10 @@ class TestAddElementwise(unittest.TestCase):
                 assert np.all(np.logical_and(-10 - 1e-2 < image_aug, image_aug < 10 + 1e-2))
                 assert not np.allclose(image_aug[:, :, 1:], image_aug[:, :, :-1])
 
+    def test_pickleable(self):
+        aug = iaa.AddElementwise((0, 50), per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=2)
+
 
 class AdditiveGaussianNoise(unittest.TestCase):
     def setUp(self):
@@ -1195,6 +1204,11 @@ class AdditiveGaussianNoise(unittest.TestCase):
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
 
+    def test_pickleable(self):
+        aug = iaa.AdditiveGaussianNoise(scale=(0.1, 10), per_channel=True,
+                                        random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=2)
+
 
 class TestDropout(unittest.TestCase):
     def setUp(self):
@@ -1292,6 +1306,27 @@ class TestDropout(unittest.TestCase):
         assert nb_changed_aug >= int(nb_iterations * 0.95)
         assert nb_changed_aug_det == 0
 
+    def test_list_as_p(self):
+        aug = iaa.Dropout(p=[0.0, 0.5, 1.0])
+        images = np.ones((1, 20, 20, 1), dtype=np.uint8) * 255
+        nb_seen = [0, 0, 0, 0]
+        nb_iterations = 1000
+        for i in sm.xrange(nb_iterations):
+            observed_aug = aug.augment_images(images)
+
+            n_dropped = np.sum(observed_aug == 0)
+            p_observed = n_dropped / observed_aug.size
+            if 0 <= p_observed <= 0.01:
+                nb_seen[0] += 1
+            elif 0.5 - 0.05 <= p_observed <= 0.5 + 0.05:
+                nb_seen[1] += 1
+            elif 1.0-0.01 <= p_observed <= 1.0:
+                nb_seen[2] += 1
+            else:
+                nb_seen[3] += 1
+        assert np.allclose(nb_seen[0:3], nb_iterations*0.33, rtol=0, atol=75)
+        assert nb_seen[3] < 30
+
     def test_stochastic_parameter_as_p(self):
         # varying p by stochastic parameter
         aug = iaa.Dropout(p=iap.Binomial(1-iap.Choice([0.0, 0.5])))
@@ -1325,6 +1360,10 @@ class TestDropout(unittest.TestCase):
         hm = ia.quokka_heatmap()
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
+
+    def test_pickleable(self):
+        aug = iaa.Dropout(p=0.5, per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
 
 
 class TestCoarseDropout(unittest.TestCase):
@@ -1418,6 +1457,675 @@ class TestCoarseDropout(unittest.TestCase):
         hm = ia.quokka_heatmap()
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
+
+    def test_pickleable(self):
+        aug = iaa.CoarseDropout(p=0.5, size_px=10, per_channel=True,
+                                random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10, shape=(40, 40, 3))
+
+
+class TestDropout2d(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init___defaults(self):
+        aug = iaa.Dropout2d(p=0)
+        assert isinstance(aug.p, iap.Binomial)
+        assert np.isclose(aug.p.p.value, 1.0)
+        assert aug.nb_keep_channels == 1
+
+    def test___init___p_is_float(self):
+        aug = iaa.Dropout2d(p=0.7)
+        assert isinstance(aug.p, iap.Binomial)
+        assert np.isclose(aug.p.p.value, 0.3)
+        assert aug.nb_keep_channels == 1
+
+    def test___init___nb_keep_channels_is_int(self):
+        aug = iaa.Dropout2d(p=0, nb_keep_channels=2)
+        assert isinstance(aug.p, iap.Binomial)
+        assert np.isclose(aug.p.p.value, 1.0)
+        assert aug.nb_keep_channels == 2
+
+    def test_no_images_in_batch(self):
+        aug = iaa.Dropout2d(p=0.0, nb_keep_channels=0)
+        heatmaps = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        heatmaps = ia.HeatmapsOnImage(heatmaps, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=heatmaps)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, heatmaps.arr_0to1)
+
+    def test_p_is_1(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=0)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == image.dtype.name
+        assert np.sum(image_aug) == 0
+
+    def test_p_is_1_heatmaps(self):
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=0)
+        arr = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        hm = ia.HeatmapsOnImage(arr, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=hm)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, 0.0)
+
+    def test_p_is_1_segmentation_maps(self):
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=0)
+        arr = np.int32([
+            [0, 1],
+            [0, 1]
+        ])
+        segmaps = ia.SegmentationMapsOnImage(arr, shape=(2, 2, 3))
+
+        segmaps_aug = aug(segmentation_maps=segmaps)
+
+        assert np.allclose(segmaps_aug.arr, 0.0)
+
+    def test_p_is_1_cbaois(self):
+        cbaois = [
+            ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(2, 2, 3)),
+            ia.BoundingBoxesOnImage([ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)],
+                                    shape=(2, 2, 3)),
+            ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0), (1, 1)])],
+                               shape=(2, 2, 3)),
+            ia.LineStringsOnImage([ia.LineString([(0, 0), (1, 0)])],
+                                  shape=(2, 2, 3))
+        ]
+
+        cbaoi_names = ["keypoints", "bounding_boxes", "polygons",
+                       "line_strings"]
+
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=0)
+        for name, cbaoi in zip(cbaoi_names, cbaois):
+            with self.subTest(datatype=name):
+                cbaoi_aug = aug(**{name: cbaoi})
+
+                assert cbaoi_aug.shape == (2, 2, 3)
+                assert cbaoi_aug.items == []
+
+    def test_p_is_1_heatmaps__keep_one_channel(self):
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=1)
+        arr = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        hm = ia.HeatmapsOnImage(arr, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=hm)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, hm.arr_0to1)
+
+    def test_p_is_1_segmentation_maps__keep_one_channel(self):
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=1)
+        arr = np.int32([
+            [0, 1],
+            [0, 1]
+        ])
+        segmaps = ia.SegmentationMapsOnImage(arr, shape=(2, 2, 3))
+
+        segmaps_aug = aug(segmentation_maps=segmaps)
+
+        assert np.allclose(segmaps_aug.arr, segmaps.arr)
+
+    def test_p_is_1_cbaois__keep_one_channel(self):
+        cbaois = [
+            ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(2, 2, 3)),
+            ia.BoundingBoxesOnImage([ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)],
+                                    shape=(2, 2, 3)),
+            ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0), (1, 1)])],
+                               shape=(2, 2, 3)),
+            ia.LineStringsOnImage([ia.LineString([(0, 0), (1, 0)])],
+                                  shape=(2, 2, 3))
+        ]
+
+        cbaoi_names = ["keypoints", "bounding_boxes", "polygons",
+                       "line_strings"]
+
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=1)
+        for name, cbaoi in zip(cbaoi_names, cbaois):
+            with self.subTest(datatype=name):
+                cbaoi_aug = aug(**{name: cbaoi})
+
+                assert cbaoi_aug.shape == (2, 2, 3)
+                assert np.allclose(
+                    cbaoi_aug.items[0].coords,
+                    cbaoi.items[0].coords
+                )
+
+    def test_p_is_0(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        aug = iaa.Dropout2d(p=0.0, nb_keep_channels=0)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == image.dtype.name
+        assert np.array_equal(image_aug, image)
+
+    def test_p_is_0_heatmaps(self):
+        aug = iaa.Dropout2d(p=0.0, nb_keep_channels=0)
+        arr = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        hm = ia.HeatmapsOnImage(arr, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=hm)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, hm.arr_0to1)
+
+    def test_p_is_0_segmentation_maps(self):
+        aug = iaa.Dropout2d(p=0.0, nb_keep_channels=0)
+        arr = np.int32([
+            [0, 1],
+            [0, 1]
+        ])
+        segmaps = ia.SegmentationMapsOnImage(arr, shape=(2, 2, 3))
+
+        segmaps_aug = aug(segmentation_maps=segmaps)
+
+        assert np.allclose(segmaps_aug.arr, segmaps.arr)
+
+    def test_p_is_0_cbaois(self):
+        cbaois = [
+            ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(2, 2, 3)),
+            ia.BoundingBoxesOnImage([ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)],
+                                    shape=(2, 2, 3)),
+            ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0), (1, 1)])],
+                               shape=(2, 2, 3)),
+            ia.LineStringsOnImage([ia.LineString([(0, 0), (1, 0)])],
+                                  shape=(2, 2, 3))
+        ]
+
+        cbaoi_names = ["keypoints", "bounding_boxes", "polygons",
+                       "line_strings"]
+
+        aug = iaa.Dropout2d(p=0.0, nb_keep_channels=0)
+        for name, cbaoi in zip(cbaoi_names, cbaois):
+            with self.subTest(datatype=name):
+                cbaoi_aug = aug(**{name: cbaoi})
+
+                assert cbaoi_aug.shape == (2, 2, 3)
+                assert np.allclose(
+                    cbaoi_aug.items[0].coords,
+                    cbaoi.items[0].coords
+                )
+
+    def test_p_is_075(self):
+        image = np.full((1, 1, 3000), 255, dtype=np.uint8)
+        aug = iaa.Dropout2d(p=0.75, nb_keep_channels=0)
+
+        image_aug = aug(image=image)
+
+        nb_kept = np.sum(image_aug == 255)
+        nb_dropped = image.shape[2] - nb_kept
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == image.dtype.name
+        assert np.isclose(nb_dropped, image.shape[2]*0.75, atol=75)
+
+    def test_force_nb_keep_channels(self):
+        image = np.full((1, 1, 3), 255, dtype=np.uint8)
+        images = np.array([image] * 1000)
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=1)
+
+        images_aug = aug(images=images)
+
+        ids_kept = [np.nonzero(image[0, 0, :]) for image in images_aug]
+        ids_kept_uq = np.unique(ids_kept)
+        nb_kept = np.sum(images_aug == 255)
+        nb_dropped = (len(images) * images.shape[3]) - nb_kept
+
+        assert images_aug.shape == images.shape
+        assert images_aug.dtype.name == images.dtype.name
+
+        # on average, keep 1 of 3 channels
+        # due to p=1.0 we expect to get exactly 2/3 dropped
+        assert np.isclose(nb_dropped,
+                          (len(images)*images.shape[3])*(2/3), atol=1)
+
+        # every channel dropped at least once, i.e. which one is kept is random
+        assert sorted(ids_kept_uq.tolist()) == [0, 1, 2]
+
+    def test_some_images_below_nb_keep_channels(self):
+        image_2c = np.full((1, 1, 2), 255, dtype=np.uint8)
+        image_3c = np.full((1, 1, 3), 255, dtype=np.uint8)
+        images = [image_2c if i % 2 == 0 else image_3c
+                  for i in sm.xrange(100)]
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=2)
+
+        images_aug = aug(images=images)
+
+        for i, image_aug in enumerate(images_aug):
+            assert np.sum(image_aug == 255) == 2
+            if i % 2 == 0:
+                assert np.sum(image_aug == 0) == 0
+            else:
+                assert np.sum(image_aug == 0) == 1
+
+    def test_all_images_below_nb_keep_channels(self):
+        image = np.full((1, 1, 2), 255, dtype=np.uint8)
+        images = np.array([image] * 100)
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=3)
+
+        images_aug = aug(images=images)
+
+        nb_kept = np.sum(images_aug == 255)
+        nb_dropped = (len(images) * images.shape[3]) - nb_kept
+        assert nb_dropped == 0
+
+    def test_get_parameters(self):
+        aug = iaa.Dropout2d(p=0.7, nb_keep_channels=2)
+        params = aug.get_parameters()
+        assert isinstance(params[0], iap.Binomial)
+        assert np.isclose(params[0].p.value, 0.3)
+        assert params[1] == 2
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.full(shape, 255, dtype=np.uint8)
+                aug = iaa.Dropout2d(1.0, nb_keep_channels=0)
+
+                image_aug = aug(image=image)
+
+                assert image_aug.dtype.name == "uint8"
+                assert image_aug.shape == image.shape
+
+    def test_other_dtypes_bool(self):
+        image = np.full((1, 1, 10), 1, dtype=bool)
+        aug = iaa.Dropout2d(p=1.0, nb_keep_channels=3)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == "bool"
+        assert np.sum(image_aug == 1) == 3
+        assert np.sum(image_aug == 0) == 7
+
+    def test_other_dtypes_uint_int(self):
+        dts = ["uint8", "uint16", "uint32", "uint64",
+               "int8", "int16", "int32", "int64"]
+
+        for dt in dts:
+            min_value, center_value, max_value = \
+                iadt.get_value_range_of_dtype(dt)
+            values = [min_value, int(center_value), max_value]
+
+            for value in values:
+                with self.subTest(dtype=dt, value=value):
+                    image = np.full((1, 1, 10), value, dtype=dt)
+                    aug = iaa.Dropout2d(p=1.0, nb_keep_channels=3)
+
+                    image_aug = aug(image=image)
+
+                    assert image_aug.shape == image.shape
+                    assert image_aug.dtype.name == dt
+                    if value == 0:
+                        assert np.sum(image_aug == value) == 10
+                    else:
+                        assert np.sum(image_aug == value) == 3
+                        assert np.sum(image_aug == 0) == 7
+
+    def test_other_dtypes_float(self):
+        dts = ["float16", "float32", "float64", "float128"]
+
+        for dt in dts:
+            min_value, center_value, max_value = \
+                iadt.get_value_range_of_dtype(dt)
+            values = [min_value, -10.0, center_value, 10.0, max_value]
+
+            atol = 1e-3*max_value if dt == "float16" else 1e-9 * max_value
+            _isclose = functools.partial(np.isclose, atol=atol, rtol=0)
+
+            for value in values:
+                with self.subTest(dtype=dt, value=value):
+                    image = np.full((1, 1, 10), value, dtype=dt)
+                    aug = iaa.Dropout2d(p=1.0, nb_keep_channels=3)
+
+                    image_aug = aug(image=image)
+
+                    assert image_aug.shape == image.shape
+                    assert image_aug.dtype.name == dt
+                    if _isclose(value, 0.0):
+                        assert np.sum(_isclose(image_aug, value)) == 10
+                    else:
+                        assert (
+                            np.sum(_isclose(image_aug, np.float128(value)))
+                            == 3)
+                        assert np.sum(image_aug == 0) == 7
+
+    def test_pickleable(self):
+        aug = iaa.Dropout2d(p=0.5, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3, shape=(1, 1, 50))
+
+
+class TestTotalDropout(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init___p(self):
+        aug = iaa.TotalDropout(p=0)
+        assert isinstance(aug.p, iap.Binomial)
+        assert np.isclose(aug.p.p.value, 1.0)
+
+    def test_p_is_1(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        aug = iaa.TotalDropout(p=1.0)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == image.dtype.name
+        assert np.sum(image_aug) == 0
+
+    def test_p_is_1_multiple_images_list(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        images = [image, image, image]
+        aug = iaa.TotalDropout(p=1.0)
+
+        images_aug = aug(images=images)
+
+        for image_aug, image_ in zip(images_aug, images):
+            assert image_aug.shape == image_.shape
+            assert image_aug.dtype.name == image_.dtype.name
+            assert np.sum(image_aug) == 0
+
+    def test_p_is_1_multiple_images_array(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        images = np.array([image, image, image], dtype=np.uint8)
+        aug = iaa.TotalDropout(p=1.0)
+
+        images_aug = aug(images=images)
+
+        assert images_aug.shape == images.shape
+        assert images_aug.dtype.name == images.dtype.name
+        assert np.sum(images_aug) == 0
+
+    def test_p_is_1_heatmaps(self):
+        aug = iaa.TotalDropout(p=1.0)
+        arr = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        hm = ia.HeatmapsOnImage(arr, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=hm)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, 0.0)
+
+    def test_p_is_1_segmentation_maps(self):
+        aug = iaa.TotalDropout(p=1.0)
+        arr = np.int32([
+            [0, 1],
+            [0, 1]
+        ])
+        segmaps = ia.SegmentationMapsOnImage(arr, shape=(2, 2, 3))
+
+        segmaps_aug = aug(segmentation_maps=segmaps)
+
+        assert np.allclose(segmaps_aug.arr, 0.0)
+
+    def test_p_is_1_cbaois(self):
+        cbaois = [
+            ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(2, 2, 3)),
+            ia.BoundingBoxesOnImage([ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)],
+                                    shape=(2, 2, 3)),
+            ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0), (1, 1)])],
+                               shape=(2, 2, 3)),
+            ia.LineStringsOnImage([ia.LineString([(0, 0), (1, 0)])],
+                                  shape=(2, 2, 3))
+        ]
+
+        cbaoi_names = ["keypoints", "bounding_boxes", "polygons",
+                       "line_strings"]
+
+        aug = iaa.TotalDropout(p=1.0)
+        for name, cbaoi in zip(cbaoi_names, cbaois):
+            with self.subTest(datatype=name):
+                cbaoi_aug = aug(**{name: cbaoi})
+
+                assert cbaoi_aug.shape == (2, 2, 3)
+                assert cbaoi_aug.items == []
+
+    def test_p_is_0(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        aug = iaa.TotalDropout(p=0.0)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == image.dtype.name
+        assert np.array_equal(image_aug, image)
+
+    def test_p_is_0_multiple_images_list(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        images = [image, image, image]
+        aug = iaa.TotalDropout(p=0.0)
+
+        images_aug = aug(images=images)
+
+        for image_aug, image_ in zip(images_aug, images):
+            assert image_aug.shape == image_.shape
+            assert image_aug.dtype.name == image_.dtype.name
+            assert np.array_equal(image_aug, image_)
+
+    def test_p_is_0_multiple_images_array(self):
+        image = np.full((1, 2, 3), 255, dtype=np.uint8)
+        images = np.array([image, image, image], dtype=np.uint8)
+        aug = iaa.TotalDropout(p=0.0)
+
+        images_aug = aug(images=images)
+
+        for image_aug, image_ in zip(images_aug, images):
+            assert image_aug.shape == image_.shape
+            assert image_aug.dtype.name == image_.dtype.name
+            assert np.array_equal(image_aug, image_)
+
+    def test_p_is_0_heatmaps(self):
+        aug = iaa.TotalDropout(p=0.0)
+        arr = np.float32([
+            [0.0, 1.0],
+            [0.0, 1.0]
+        ])
+        hm = ia.HeatmapsOnImage(arr, shape=(2, 2, 3))
+
+        heatmaps_aug = aug(heatmaps=hm)
+
+        assert np.allclose(heatmaps_aug.arr_0to1, hm.arr_0to1)
+
+    def test_p_is_0_segmentation_maps(self):
+        aug = iaa.TotalDropout(p=0.0)
+        arr = np.int32([
+            [0, 1],
+            [0, 1]
+        ])
+        segmaps = ia.SegmentationMapsOnImage(arr, shape=(2, 2, 3))
+
+        segmaps_aug = aug(segmentation_maps=segmaps)
+
+        assert np.allclose(segmaps_aug.arr, segmaps.arr)
+
+    def test_p_is_0_cbaois(self):
+        cbaois = [
+            ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(2, 2, 3)),
+            ia.BoundingBoxesOnImage([ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)],
+                                    shape=(2, 2, 3)),
+            ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0), (1, 1)])],
+                               shape=(2, 2, 3)),
+            ia.LineStringsOnImage([ia.LineString([(0, 0), (1, 0)])],
+                                  shape=(2, 2, 3))
+        ]
+
+        cbaoi_names = ["keypoints", "bounding_boxes", "polygons",
+                       "line_strings"]
+
+        aug = iaa.TotalDropout(p=0.0)
+        for name, cbaoi in zip(cbaoi_names, cbaois):
+            with self.subTest(datatype=name):
+                cbaoi_aug = aug(**{name: cbaoi})
+
+                assert cbaoi_aug.shape == (2, 2, 3)
+                assert np.allclose(
+                    cbaoi_aug.items[0].coords,
+                    cbaoi.items[0].coords
+                )
+
+    def test_p_is_075_multiple_images_list(self):
+        images = [np.full((1, 1, 1), 255, dtype=np.uint8)] * 3000
+        aug = iaa.TotalDropout(p=0.75)
+
+        images_aug = aug(images=images)
+
+        nb_kept = np.sum([np.sum(image_aug == 255) for image_aug in images_aug])
+        nb_dropped = len(images) - nb_kept
+        for image_aug in images_aug:
+            assert image_aug.shape == images[0].shape
+            assert image_aug.dtype.name == images[0].dtype.name
+        assert np.isclose(nb_dropped, len(images)*0.75, atol=75)
+
+    def test_p_is_075_multiple_images_array(self):
+        images = np.full((3000, 1, 1, 1), 255, dtype=np.uint8)
+        aug = iaa.TotalDropout(p=0.75)
+
+        images_aug = aug(images=images)
+
+        nb_kept = np.sum(images_aug == 255)
+        nb_dropped = len(images) - nb_kept
+        assert images_aug.shape == images.shape
+        assert images_aug.dtype.name == images.dtype.name
+        assert np.isclose(nb_dropped, len(images)*0.75, atol=75)
+
+    def test_get_parameters(self):
+        aug = iaa.TotalDropout(p=0.0)
+        params = aug.get_parameters()
+        assert params[0] is aug.p
+
+    def test_unusual_channel_numbers(self):
+        shapes = [
+            (5, 1, 1, 4),
+            (5, 1, 1, 5),
+            (5, 1, 1, 512),
+            (5, 1, 1, 513)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                images = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.TotalDropout(1.0)
+
+                images_aug = aug(images=images)
+
+                assert np.all(images_aug == 0)
+                assert images_aug.dtype.name == "uint8"
+                assert images_aug.shape == shape
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (5, 0, 0),
+            (5, 0, 1),
+            (5, 1, 0),
+            (5, 0, 1, 0),
+            (5, 1, 0, 0),
+            (5, 0, 1, 1),
+            (5, 1, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                images = np.full(shape, 255, dtype=np.uint8)
+                aug = iaa.TotalDropout(1.0)
+
+                images_aug = aug(images=images)
+
+                assert images_aug.dtype.name == "uint8"
+                assert images_aug.shape == images.shape
+
+    def test_other_dtypes_bool(self):
+        image = np.full((1, 1, 10), 1, dtype=bool)
+        aug = iaa.TotalDropout(p=1.0)
+
+        image_aug = aug(image=image)
+
+        assert image_aug.shape == image.shape
+        assert image_aug.dtype.name == "bool"
+        assert np.sum(image_aug == 1) == 0
+
+    def test_other_dtypes_uint_int(self):
+        dts = ["uint8", "uint16", "uint32", "uint64",
+               "int8", "int16", "int32", "int64"]
+
+        for dt in dts:
+            min_value, center_value, max_value = \
+                iadt.get_value_range_of_dtype(dt)
+            values = [min_value, int(center_value), max_value]
+
+            for value in values:
+                for p in [1.0, 0.0]:
+                    with self.subTest(dtype=dt, value=value, p=p):
+                        images = np.full((5, 1, 1, 3), value, dtype=dt)
+                        aug = iaa.TotalDropout(p=p)
+
+                        images_aug = aug(images=images)
+
+                        assert images_aug.shape == images.shape
+                        assert images_aug.dtype.name == dt
+                        if np.isclose(p, 1.0) or value == 0:
+                            assert np.sum(images_aug == 0) == 5*3
+                        else:
+                            assert np.sum(images_aug == value) == 5*3
+
+    def test_other_dtypes_float(self):
+        dts = ["float16", "float32", "float64", "float128"]
+
+        for dt in dts:
+            min_value, center_value, max_value = \
+                iadt.get_value_range_of_dtype(dt)
+            values = [min_value, -10.0, center_value, 10.0, max_value]
+
+            atol = 1e-3*max_value if dt == "float16" else 1e-9 * max_value
+            _isclose = functools.partial(np.isclose, atol=atol, rtol=0)
+
+            for value in values:
+                for p in [1.0, 0.0]:
+                    with self.subTest(dtype=dt, value=value, p=p):
+                        images = np.full((5, 1, 1, 3), value, dtype=dt)
+                        aug = iaa.TotalDropout(p=p)
+
+                        images_aug = aug(images=images)
+
+                        assert images_aug.shape == images.shape
+                        assert images_aug.dtype.name == dt
+                        if np.isclose(p, 1.0):
+                            assert np.sum(_isclose(images_aug, 0.0)) == 5*3
+                        else:
+                            assert (
+                                np.sum(_isclose(images_aug, np.float128(value)))
+                                == 5*3)
+
+    def test_pickleable(self):
+        aug = iaa.TotalDropout(p=0.5, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=30, shape=(4, 4, 2))
 
 
 class TestMultiply(unittest.TestCase):
@@ -1888,6 +2596,10 @@ class TestMultiply(unittest.TestCase):
                 assert np.all(np.logical_and(-100 - 1e-1 < image_aug, image_aug < 100 + 1e-1))
                 assert not np.allclose(image_aug[:, :, 1:], image_aug[:, :, :-1])
             """
+
+    def test_pickleable(self):
+        aug = iaa.Multiply((0.5, 1.5), per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20)
 
 
 class TestMultiplyElementwise(unittest.TestCase):
@@ -2392,6 +3104,11 @@ class TestMultiplyElementwise(unittest.TestCase):
                 assert not np.allclose(image_aug[:, :, 1:], image_aug[:, :, :-1])
             """
 
+    def test_pickleable(self):
+        aug = iaa.MultiplyElementwise((0.5, 1.5), per_channel=True,
+                                      random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
+
 
 class TestReplaceElementwise(unittest.TestCase):
     def setUp(self):
@@ -2763,6 +3480,11 @@ class TestReplaceElementwise(unittest.TestCase):
             assert np.all(np.logical_and(0 <= image_aug, image_aug <= 10))
             assert not np.allclose(image_aug[:, :, 1:], image_aug[:, :, :-1], atol=0.01)
 
+    def test_pickleable(self):
+        aug = iaa.ReplaceElementwise(mask=0.5, replacement=(0, 255),
+                                     per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
+
 
 # not more tests necessary here as SaltAndPepper is just a tiny wrapper around
 # ReplaceElementwise
@@ -2785,6 +3507,10 @@ class TestSaltAndPepper(unittest.TestCase):
         nb_salt = np.sum(observed > 255 - 40)
         assert nb_pepper > 200
         assert nb_salt > 200
+
+    def test_pickleable(self):
+        aug = iaa.SaltAndPepper(p=0.5, per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
 
 
 class TestCoarseSaltAndPepper(unittest.TestCase):
@@ -2872,6 +3598,11 @@ class TestCoarseSaltAndPepper(unittest.TestCase):
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
 
+    def test_pickleable(self):
+        aug = iaa.CoarseSaltAndPepper(p=0.5, size_px=(4, 15),
+                                      per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20)
+
 
 # not more tests necessary here as Salt is just a tiny wrapper around
 # ReplaceElementwise
@@ -2896,6 +3627,10 @@ class TestSalt(unittest.TestCase):
         nb_salt = np.sum(observed > 255 - 40)
         assert nb_pepper == 0
         assert nb_salt > 200
+
+    def test_pickleable(self):
+        aug = iaa.Salt(p=0.5, per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
 
 
 class TestCoarseSalt(unittest.TestCase):
@@ -2984,6 +3719,11 @@ class TestCoarseSalt(unittest.TestCase):
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
 
+    def test_pickleable(self):
+        aug = iaa.CoarseSalt(p=0.5, size_px=(4, 15),
+                             per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20)
+
 
 # not more tests necessary here as Salt is just a tiny wrapper around
 # ReplaceElementwise
@@ -3007,6 +3747,10 @@ class TestPepper(unittest.TestCase):
         nb_salt = np.sum(observed > 255 - 40)
         assert nb_pepper > 200
         assert nb_salt == 0
+
+    def test_pickleable(self):
+        aug = iaa.Pepper(p=0.5, per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3)
 
 
 class TestCoarsePepper(unittest.TestCase):
@@ -3094,6 +3838,452 @@ class TestCoarsePepper(unittest.TestCase):
         hm = ia.quokka_heatmap()
         hm_aug = aug.augment_heatmaps([hm])[0]
         assert np.allclose(hm.arr_0to1, hm_aug.arr_0to1)
+
+    def test_pickleable(self):
+        aug = iaa.CoarsePepper(p=0.5, size_px=(4, 15),
+                               per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20)
+
+
+class Test_invert(unittest.TestCase):
+    @mock.patch("imgaug.augmenters.arithmetic.invert_")
+    def test_mocked_defaults(self, mock_invert):
+        mock_invert.return_value = "foo"
+        arr = np.zeros((1,), dtype=np.uint8)
+        observed = iaa.invert(arr)
+
+        assert observed == "foo"
+        args = mock_invert.call_args_list[0]
+        assert np.array_equal(mock_invert.call_args_list[0][0][0], arr)
+        assert args[1]["min_value"] is None
+        assert args[1]["max_value"] is None
+        assert args[1]["threshold"] is None
+        assert args[1]["invert_above_threshold"] is True
+
+    @mock.patch("imgaug.augmenters.arithmetic.invert_")
+    def test_mocked(self, mock_invert):
+        mock_invert.return_value = "foo"
+        arr = np.zeros((1,), dtype=np.uint8)
+        observed = iaa.invert(arr, min_value=1, max_value=10, threshold=5,
+                              invert_above_threshold=False)
+
+        assert observed == "foo"
+        args = mock_invert.call_args_list[0]
+        assert np.array_equal(mock_invert.call_args_list[0][0][0], arr)
+        assert args[1]["min_value"] == 1
+        assert args[1]["max_value"] == 10
+        assert args[1]["threshold"] == 5
+        assert args[1]["invert_above_threshold"] is False
+
+    def test_uint8(self):
+        values = np.array([0, 20, 45, 60, 128, 255], dtype=np.uint8)
+        expected = np.array([
+            255,
+            255-20,
+            255-45,
+            255-60,
+            255-128,
+            255-255
+        ], dtype=np.uint8)
+
+        observed = iaa.invert(values)
+
+        assert np.array_equal(observed, expected)
+        assert observed is not values
+
+
+# most parts of this function are tested via Invert
+class Test_invert_(unittest.TestCase):
+    def test_arr_is_noncontiguous_uint8(self):
+        zeros = np.zeros((4, 4, 3), dtype=np.uint8)
+        max_vr_flipped = np.fliplr(np.copy(zeros + 255))
+
+        observed = iaa.invert_(max_vr_flipped)
+        expected = zeros
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
+    def test_arr_is_view_uint8(self):
+        zeros = np.zeros((4, 4, 3), dtype=np.uint8)
+        max_vr_view = np.copy(zeros + 255)[:, :, [0, 2]]
+
+        observed = iaa.invert_(max_vr_view)
+        expected = zeros[:, :, [0, 2]]
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
+    def test_uint(self):
+        dtypes = ["uint8", "uint16", "uint32", "uint64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    max_value - 0,
+                    max_value - 20,
+                    max_value - 45,
+                    max_value - 60,
+                    max_value - center_value,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values))
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint_with_threshold_50_inv_above(self):
+        threshold = 50
+        dtypes = ["uint8", "uint16", "uint32", "uint64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    0,
+                    20,
+                    45,
+                    max_value - 60,
+                    max_value - center_value,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint_with_threshold_0_inv_above(self):
+        threshold = 0
+        dtypes = ["uint8", "uint16", "uint32", "uint64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    max_value - 0,
+                    max_value - 20,
+                    max_value - 45,
+                    max_value - 60,
+                    max_value - center_value,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint8_with_threshold_255_inv_above(self):
+        threshold = 255
+        dtypes = ["uint8"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    0,
+                    20,
+                    45,
+                    60,
+                    center_value,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint8_with_threshold_256_inv_above(self):
+        threshold = 256
+        dtypes = ["uint8"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    0,
+                    20,
+                    45,
+                    60,
+                    center_value,
+                    max_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint_with_threshold_50_inv_below(self):
+        threshold = 50
+        dtypes = ["uint8", "uint16", "uint32", "uint64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    max_value - 0,
+                    max_value - 20,
+                    max_value - 45,
+                    60,
+                    center_value,
+                    max_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=False)
+
+                assert np.array_equal(observed, expected)
+
+    def test_uint_with_threshold_50_inv_above_with_min_max(self):
+        threshold = 50
+        # uint64 does not support custom min/max, hence removed it here
+        dtypes = ["uint8", "uint16", "uint32"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([0, 20, 45, 60, center_value, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    0,  # not clipped to 10 as only >thresh affected
+                    20,
+                    45,
+                    100 - 50,
+                    100 - 90,
+                    100 - 90
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       min_value=10,
+                                       max_value=100,
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_int_with_threshold_50_inv_above(self):
+        threshold = 50
+        dtypes = ["int8", "int16", "int32", "int64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([-45, -20, center_value, 20, 45, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    -45,
+                    -20,
+                    center_value,
+                    20,
+                    45,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.array_equal(observed, expected)
+
+    def test_int_with_threshold_50_inv_below(self):
+        threshold = 50
+        dtypes = ["int8", "int16", "int32", "int64"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = int(center_value)
+
+                values = np.array([-45, -20, center_value, 20, 45, max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    (-1) * (-45) - 1,
+                    (-1) * (-20) - 1,
+                    (-1) * center_value - 1,
+                    (-1) * 20 - 1,
+                    (-1) * 45 - 1,
+                    max_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=False)
+
+                assert np.array_equal(observed, expected)
+
+    def test_float_with_threshold_50_inv_above(self):
+        threshold = 50
+        dtypes = ["float16", "float32", "float64", "float128"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = center_value
+
+                values = np.array([-45.5, -20.5, center_value, 20.5, 45.5,
+                                   max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    -45.5,
+                    -20.5,
+                    center_value,
+                    20.5,
+                    45.5,
+                    min_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=True)
+
+                assert np.allclose(observed, expected, rtol=0, atol=1e-4)
+
+    def test_float_with_threshold_50_inv_below(self):
+        threshold = 50
+        dtypes = ["float16", "float32", "float64", "float128"]
+        for dt in dtypes:
+            with self.subTest(dtype=dt):
+                min_value, center_value, max_value = \
+                    iadt.get_value_range_of_dtype(dt)
+                center_value = center_value
+
+                values = np.array([-45.5, -20.5, center_value, 20.5, 45.5,
+                                   max_value],
+                                  dtype=dt)
+                expected = np.array([
+                    (-1) * (-45.5),
+                    (-1) * (-20.5),
+                    (-1) * center_value,
+                    (-1) * 20.5,
+                    (-1) * 45.5,
+                    max_value
+                ], dtype=dt)
+
+                observed = iaa.invert_(np.copy(values),
+                                       threshold=threshold,
+                                       invert_above_threshold=False)
+
+                assert np.allclose(observed, expected, rtol=0, atol=1e-4)
+
+
+class Test_solarize(unittest.TestCase):
+    @mock.patch("imgaug.augmenters.arithmetic.solarize_")
+    def test_mocked_defaults(self, mock_sol):
+        arr = np.zeros((1,), dtype=np.uint8)
+        mock_sol.return_value = "foo"
+
+        observed = iaa.solarize(arr)
+
+        args = mock_sol.call_args_list[0][0]
+        kwargs = mock_sol.call_args_list[0][1]
+        assert args[0] is not arr
+        assert np.array_equal(args[0], arr)
+        assert kwargs["threshold"] == 128
+        assert observed == "foo"
+
+    @mock.patch("imgaug.augmenters.arithmetic.solarize_")
+    def test_mocked(self, mock_sol):
+        arr = np.zeros((1,), dtype=np.uint8)
+        mock_sol.return_value = "foo"
+
+        observed = iaa.solarize(arr, threshold=5)
+
+        args = mock_sol.call_args_list[0][0]
+        kwargs = mock_sol.call_args_list[0][1]
+        assert args[0] is not arr
+        assert np.array_equal(args[0], arr)
+        assert kwargs["threshold"] == 5
+        assert observed == "foo"
+
+    def test_uint8(self):
+        arr = np.array([0, 10, 50, 150, 200, 255], dtype=np.uint8)
+        arr = arr.reshape((2, 3, 1))
+
+        observed = iaa.solarize(arr)
+
+        expected = np.array([0, 10, 50, 255-150, 255-200, 255-255],
+                            dtype=np.uint8).reshape((2, 3, 1))
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
+    def test_compare_with_pil(self):
+        import PIL.Image
+        import PIL.ImageOps
+
+        def _solarize_pil(image, threshold):
+            img = PIL.Image.fromarray(image)
+            return np.asarray(PIL.ImageOps.solarize(img, threshold))
+
+        image = np.mod(np.arange(20*20*3), 255).astype(np.uint8)\
+            .reshape((20, 20, 3))
+
+        for threshold in np.arange(256):
+            image_pil = _solarize_pil(image, threshold)
+            image_iaa = iaa.solarize(image, threshold)
+            assert np.array_equal(image_pil, image_iaa)
+
+
+class Test_solarize_(unittest.TestCase):
+    @mock.patch("imgaug.augmenters.arithmetic.invert_")
+    def test_mocked_defaults(self, mock_sol):
+        arr = np.zeros((1,), dtype=np.uint8)
+        mock_sol.return_value = "foo"
+
+        observed = iaa.solarize_(arr)
+
+        args = mock_sol.call_args_list[0][0]
+        kwargs = mock_sol.call_args_list[0][1]
+        assert args[0] is arr
+        assert kwargs["threshold"] == 128
+        assert observed == "foo"
+
+    @mock.patch("imgaug.augmenters.arithmetic.invert_")
+    def test_mocked(self, mock_sol):
+        arr = np.zeros((1,), dtype=np.uint8)
+        mock_sol.return_value = "foo"
+
+        observed = iaa.solarize_(arr, threshold=5)
+
+        args = mock_sol.call_args_list[0][0]
+        kwargs = mock_sol.call_args_list[0][1]
+        assert args[0] is arr
+        assert kwargs["threshold"] == 5
+        assert observed == "foo"
 
 
 class TestInvert(unittest.TestCase):
@@ -3201,6 +4391,30 @@ class TestInvert(unittest.TestCase):
         assert 300 - 75 < seen[0] < 300 + 75
         assert 700 - 75 < seen[1] < 700 + 75
 
+    def test_threshold(self):
+        arr = np.array([0, 10, 50, 150, 200, 255], dtype=np.uint8)
+        arr = arr.reshape((2, 3, 1))
+        aug = iaa.Invert(p=1.0, threshold=128, invert_above_threshold=True)
+
+        observed = aug.augment_image(arr)
+
+        expected = np.array([0, 10, 50, 255-150, 255-200, 255-255],
+                            dtype=np.uint8).reshape((2, 3, 1))
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
+    def test_threshold_inv_below(self):
+        arr = np.array([0, 10, 50, 150, 200, 255], dtype=np.uint8)
+        arr = arr.reshape((2, 3, 1))
+        aug = iaa.Invert(p=1.0, threshold=128, invert_above_threshold=False)
+
+        observed = aug.augment_image(arr)
+
+        expected = np.array([255-0, 255-10, 255-50, 150, 200, 255],
+                            dtype=np.uint8).reshape((2, 3, 1))
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
     def test_keypoints_dont_change(self):
         # keypoints shouldnt be changed
         zeros = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -3279,13 +4493,12 @@ class TestInvert(unittest.TestCase):
         # test get_parameters()
         aug = iaa.Invert(p=0.5, per_channel=False, min_value=10, max_value=20)
         params = aug.get_parameters()
-        assert isinstance(params[0], iap.Binomial)
-        assert isinstance(params[0].p, iap.Deterministic)
-        assert isinstance(params[1], iap.Deterministic)
-        assert 0.5 - 1e-4 < params[0].p.value < 0.5 + 1e-4
-        assert params[1].value == 0
+        assert params[0] is aug.p
+        assert params[1] is aug.per_channel
         assert params[2] == 10
         assert params[3] == 20
+        assert params[4] is aug.threshold
+        assert params[5] is aug.invert_above_threshold
 
     def test_heatmaps_dont_change(self):
         # test heatmaps (not affected by augmenter)
@@ -3446,6 +4659,31 @@ class TestInvert(unittest.TestCase):
                 else:
                     assert np.allclose(image_center_aug, image_center)
                 assert np.allclose(image_max_aug, image_min)
+
+    def test_pickleable(self):
+        aug = iaa.Invert(p=0.5, per_channel=True, random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20, shape=(2, 2, 5))
+
+
+class TestSolarize(unittest.TestCase):
+    def test_p_is_one(self):
+        zeros = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        observed = iaa.Solarize(p=1.0).augment_image(zeros)
+
+        expected = zeros
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
+
+    def test_p_is_one_some_values_above_threshold(self):
+        arr = np.array([0, 99, 111, 200]).astype(np.uint8).reshape((2, 2, 1))
+
+        observed = iaa.Solarize(p=1.0, threshold=(100, 110))(image=arr)
+
+        expected = np.array([0, 99, 255-111, 255-200])\
+            .astype(np.uint8).reshape((2, 2, 1))
+        assert observed.dtype.name == "uint8"
+        assert np.array_equal(observed, expected)
 
 
 class TestContrastNormalization(unittest.TestCase):
@@ -3673,3 +4911,7 @@ class TestJpegCompression(unittest.TestCase):
 
                 assert image_aug.dtype.name == "uint8"
                 assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.JpegCompression((0, 100), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=20)

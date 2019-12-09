@@ -25,7 +25,7 @@ from imgaug import augmenters as iaa
 from imgaug import parameters as iap
 from imgaug import dtypes as iadt
 from imgaug import random as iarandom
-from imgaug.testutils import keypoints_equal, reseed
+from imgaug.testutils import keypoints_equal, reseed, runtest_pickleable_uint8_img
 
 
 class Test_blur_gaussian_(unittest.TestCase):
@@ -392,6 +392,88 @@ class Test_blur_gaussian_(unittest.TestCase):
             assert np.all(image_aug == expected)
 
 
+class Test_blur_mean_shift_(unittest.TestCase):
+    @property
+    def image(self):
+        image = [
+            [1, 2, 3, 4, 200, 201, 202, 203],
+            [1, 2, 3, 4, 200, 201, 202, 203],
+            [1, 2, 3, 4, 200, 201, 202, 203],
+            [1, 2, 3, 4, 200, 201, 202, 203]
+        ]
+        image = np.array(image, dtype=np.uint8).reshape((4, 2*4, 1))
+        image = np.tile(image, (1, 1, 3))
+        return image
+
+    def test_simple_image(self):
+        image = self.image
+
+        image_blurred = iaa.blur_mean_shift_(np.copy(image), 0.5, 0.5)
+
+        assert image_blurred.shape == image.shape
+        assert image_blurred.dtype.name == "uint8"
+        assert not np.array_equal(image_blurred, image)
+        assert 0 <= np.average(image[:, 0:4, :]) <= 5
+        assert 199 <= np.average(image[:, 4:, :]) <= 203
+
+    def test_hw_image(self):
+        image = self.image[:, :, 0]
+
+        image_blurred = iaa.blur_mean_shift_(np.copy(image), 0.5, 0.5)
+
+        assert image_blurred.shape == image.shape
+        assert image_blurred.dtype.name == "uint8"
+        assert not np.array_equal(image_blurred, image)
+
+    def test_hw1_image(self):
+        image = self.image[:, :, 0:1]
+
+        image_blurred = iaa.blur_mean_shift_(np.copy(image), 0.5, 0.5)
+
+        assert image_blurred.ndim == 3
+        assert image_blurred.shape == image.shape
+        assert image_blurred.dtype.name == "uint8"
+        assert not np.array_equal(image_blurred, image)
+
+    def test_non_contiguous_image(self):
+        image = self.image
+        image_cp = np.copy(np.fliplr(image))
+        image = np.fliplr(image)
+        assert image.flags["C_CONTIGUOUS"] is False
+
+        image_blurred = iaa.blur_mean_shift_(image, 0.5, 0.5)
+
+        assert image_blurred.shape == image_cp.shape
+        assert image_blurred.dtype.name == "uint8"
+        assert not np.array_equal(image_blurred, image_cp)
+
+    def test_both_parameters_are_zero(self):
+        image = self.image[:, :, 0]
+
+        image_blurred = iaa.blur_mean_shift_(np.copy(image), 0, 0)
+
+        assert image_blurred.shape == image.shape
+        assert image_blurred.dtype.name == "uint8"
+        assert not np.array_equal(image_blurred, image)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 1),
+            (1, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+
+                image_aug = iaa.blur_mean_shift_(np.copy(image), 1.0, 1.0)
+
+                assert image_aug.shape == image.shape
+
+
 class TestGaussianBlur(unittest.TestCase):
     def setUp(self):
         reseed()
@@ -741,6 +823,10 @@ class TestGaussianBlur(unittest.TestCase):
                 assert "forbidden dtype" in str(exc)
                 got_exception = True
             assert got_exception
+
+    def test_pickleable(self):
+        aug = iaa.GaussianBlur((0.1, 3.0), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
 
 
 class TestAverageBlur(unittest.TestCase):
@@ -1121,6 +1207,10 @@ class TestAverageBlur(unittest.TestCase):
                 got_exception = True
             assert got_exception
 
+    def test_pickleable(self):
+        aug = iaa.AverageBlur((1, 11), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
+
 
 class TestMedianBlur(unittest.TestCase):
     def __init__(self, *args, **kwargs):
@@ -1260,6 +1350,10 @@ class TestMedianBlur(unittest.TestCase):
         expected = kpsoi
         assert keypoints_equal(observed, expected)
 
+    def test_pickleable(self):
+        aug = iaa.MedianBlur((1, 11), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
+
 
 # TODO extend these tests
 class TestBilateralBlur(unittest.TestCase):
@@ -1280,6 +1374,10 @@ class TestBilateralBlur(unittest.TestCase):
                 image_aug = iaa.BilateralBlur(3)(image=image)
 
                 assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.BilateralBlur((1, 11), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
 
 
 class TestMotionBlur(unittest.TestCase):
@@ -1549,3 +1647,79 @@ class TestMotionBlur(unittest.TestCase):
         ]).astype(np.uint8)
         expected = np.tile(expected[..., np.newaxis], (1, 1, 3))
         assert np.allclose(img_aug, expected)
+
+    def test_pickleable(self):
+        aug = iaa.MotionBlur((3, 11), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=10)
+
+
+class TestMeanShiftBlur(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init___defaults(self):
+        aug = iaa.MeanShiftBlur()
+        assert np.isclose(aug.spatial_window_radius.a.value, 5.0)
+        assert np.isclose(aug.spatial_window_radius.b.value, 40.0)
+        assert np.isclose(aug.color_window_radius.a.value, 5.0)
+        assert np.isclose(aug.color_window_radius.b.value, 40.0)
+
+    def test___init___custom(self):
+        aug = iaa.MeanShiftBlur(
+            spatial_radius=[1.0, 2.0, 3.0],
+            color_radius=iap.Deterministic(5)
+        )
+        assert np.allclose(aug.spatial_window_radius.a, [1.0, 2.0, 3.0])
+        assert aug.color_window_radius.value == 5
+
+    def test_draw_samples(self):
+        aug = iaa.MeanShiftBlur(
+            spatial_radius=[1.0, 2.0, 3.0],
+            color_radius=(1.0, 2.0)
+        )
+        batch = mock.Mock()
+        batch.nb_rows = 100
+
+        samples = aug._draw_samples(batch, iarandom.RNG(0))
+
+        assert np.all(
+            np.isclose(samples[0], 1.0)
+            | np.isclose(samples[0], 2.0)
+            | np.isclose(samples[0], 3.0)
+        )
+        assert np.all((1.0 <= samples[1]) | (samples[1] <= 2.0))
+
+    @mock.patch("imgaug.augmenters.blur.blur_mean_shift_")
+    def test_mocked(self, mock_ms):
+        aug = iaa.MeanShiftBlur(
+            spatial_radius=1,
+            color_radius=2
+        )
+        image = np.zeros((1, 1, 3), dtype=np.uint8)
+        mock_ms.return_value = image
+
+        _image_aug = aug(image=image)
+
+        kwargs = mock_ms.call_args_list[0][1]
+        assert mock_ms.call_count == 1
+        assert np.isclose(kwargs["spatial_window_radius"], 1.0)
+        assert np.isclose(kwargs["color_window_radius"], 2.0)
+
+    def test_batch_without_images(self):
+        aug = iaa.MeanShiftBlur()
+        kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=0, y=1)], shape=(5, 5, 3))
+
+        kps_aug = aug(keypoints=kpsoi)
+
+        assert kps_aug.keypoints[0].x == 0
+        assert kps_aug.keypoints[0].y == 1
+
+    def test_get_parameters(self):
+        aug = iaa.MeanShiftBlur()
+        params = aug.get_parameters()
+        assert params[0] is aug.spatial_window_radius
+        assert params[1] is aug.color_window_radius
+
+    def test_pickleable(self):
+        aug = iaa.MeanShiftBlur(random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(40, 40, 3))

@@ -20,7 +20,7 @@ import cv2
 import imgaug as ia
 from imgaug import augmenters as iaa
 from imgaug import parameters as iap
-from imgaug.testutils import reseed
+from imgaug.testutils import reseed, runtest_pickleable_uint8_img
 
 
 class _TwoValueParam(iap.StochasticParameter):
@@ -159,6 +159,12 @@ class TestFastSnowyLandscape(unittest.TestCase):
                 assert image_aug.dtype.name == "uint8"
                 assert image_aug.shape == shape
 
+    def test_pickleable(self):
+        aug = iaa.FastSnowyLandscape(lightness_threshold=(50, 150),
+                                     lightness_multiplier=(1.0, 3.0),
+                                     random_state=1)
+        runtest_pickleable_uint8_img(aug)
+
 
 # only a very rough test here currently, because the augmenter is fairly hard
 # to test
@@ -234,6 +240,10 @@ class TestClouds(unittest.TestCase):
                 assert image_aug.dtype.name == "uint8"
                 assert image_aug.shape == shape
 
+    def test_pickleable(self):
+        aug = iaa.Clouds(random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3, shape=(20, 20, 3))
+
 
 # only a very rough test here currently, because the augmenter is fairly hard
 # to test
@@ -308,6 +318,10 @@ class TestFog(unittest.TestCase):
                 assert np.any(image_aug > 0)
                 assert image_aug.dtype.name == "uint8"
                 assert image_aug.shape == shape
+
+    def test_pickleable(self):
+        aug = iaa.Fog(random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3, shape=(20, 20, 3))
 
 
 # only a very rough test here currently, because the augmenter is fairly hard
@@ -390,6 +404,10 @@ class TestSnowflakes(unittest.TestCase):
                 assert image_aug.dtype.name == "uint8"
                 assert image_aug.shape == shape
 
+    def test_pickleable(self):
+        aug = iaa.Snowflakes(random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3, shape=(20, 20, 3))
+
     @classmethod
     def _measure_uniformity(cls, image, patch_size=5, n_patches=100):
         pshalf = (patch_size-1) // 2
@@ -409,3 +427,34 @@ class TestSnowflakes(unittest.TestCase):
             patch = bb.extract_from_image(grad)
             stds.append(np.std(patch))
         return 1 / (1+np.std(stds))
+
+
+class TestSnowflakesLayer(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_large_snowflakes_size(self):
+        # Test for PR #471
+        # Snowflakes size is achieved via downscaling. Large values for
+        # snowflakes_size lead to more downscaling. Hence, values close to 1.0
+        # incur risk that the image is downscaled to (0, 0) or similar values.
+        aug = iaa.SnowflakesLayer(
+                density=0.95,
+                density_uniformity=0.5,
+                flake_size=1.0,
+                flake_size_uniformity=0.5,
+                angle=0.0,
+                speed=0.5,
+                blur_sigma_fraction=0.001
+            )
+
+        nb_seen = 0
+        for _ in np.arange(50):
+            image = np.zeros((16, 16, 3), dtype=np.uint8)
+
+            image_aug = aug.augment_image(image)
+
+            assert np.std(image_aug) < 1
+            if np.average(image_aug) > 128:
+                nb_seen += 1
+        assert nb_seen > 30  # usually around 45

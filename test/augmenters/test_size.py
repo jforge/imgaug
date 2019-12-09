@@ -25,7 +25,9 @@ from imgaug import parameters as iap
 from imgaug import dtypes as iadt
 from imgaug import random as iarandom
 import imgaug.augmenters.size as iaa_size
-from imgaug.testutils import array_equal_lists, keypoints_equal, reseed
+from imgaug.testutils import (array_equal_lists, keypoints_equal, reseed,
+                              assert_cbaois_equal, shift_cbaoi,
+                              runtest_pickleable_uint8_img)
 from imgaug.augmentables.heatmaps import HeatmapsOnImage
 from imgaug.augmentables.segmaps import SegmentationMapsOnImage
 
@@ -138,6 +140,622 @@ class Test__handle_position_parameter(unittest.TestCase):
         assert got_exception
 
 
+def test_pad():
+    # -------
+    # uint, int
+    # -------
+    for dtype in [np.uint8, np.uint16, np.uint32, np.int8, np.int16, np.int32, np.int64]:
+        min_value, center_value, max_value = iadt.get_value_range_of_dtype(dtype)
+
+        arr = np.zeros((3, 3), dtype=dtype) + max_value
+
+        arr_pad = iaa.pad(arr)
+        assert arr_pad.shape == (3, 3)
+        # For some reason, arr_pad.dtype.type == dtype fails here for int64 but not for the other dtypes,
+        # even though int64 is the dtype of arr_pad. Also checked .name and .str for them -- all same value.
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.array_equal(arr_pad, arr)
+
+        arr_pad = iaa.pad(arr, top=1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[0, :] == 0)
+
+        arr_pad = iaa.pad(arr, right=1)
+        assert arr_pad.shape == (3, 4)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[:, -1] == 0)
+
+        arr_pad = iaa.pad(arr, bottom=1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[-1, :] == 0)
+
+        arr_pad = iaa.pad(arr, left=1)
+        assert arr_pad.shape == (3, 4)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[:, 0] == 0)
+
+        arr_pad = iaa.pad(arr, top=1, right=2, bottom=3, left=4)
+        assert arr_pad.shape == (3+(1+3), 3+(2+4))
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[0, :] == 0)
+        assert np.all(arr_pad[:, -2:] == 0)
+        assert np.all(arr_pad[-3:, :] == 0)
+        assert np.all(arr_pad[:, :4] == 0)
+
+        arr_pad = iaa.pad(arr, top=1, cval=10)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[0, :] == 10)
+
+        arr = np.zeros((3, 3, 3), dtype=dtype) + 127
+        arr_pad = iaa.pad(arr, top=1)
+        assert arr_pad.shape == (4, 3, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert np.all(arr_pad[0, :, 0] == 0)
+        assert np.all(arr_pad[0, :, 1] == 0)
+        assert np.all(arr_pad[0, :, 2] == 0)
+
+        v1 = int(center_value + 0.25 * max_value)
+        v2 = int(center_value + 0.40 * max_value)
+        arr = np.zeros((3, 3), dtype=dtype) + v1
+        arr[1, 1] = v2
+        arr_pad = iaa.pad(arr, top=1, mode="maximum")
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert arr_pad[0, 0] == v1
+        assert arr_pad[0, 1] == v2
+        assert arr_pad[0, 2] == v1
+
+        v1 = int(center_value + 0.25 * max_value)
+        arr = np.zeros((3, 3), dtype=dtype)
+        arr_pad = iaa.pad(arr, top=1, mode="constant", cval=v1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert arr_pad[0, 0] == v1
+        assert arr_pad[0, 1] == v1
+        assert arr_pad[0, 2] == v1
+        assert arr_pad[1, 0] == 0
+
+        for nb_channels in [1, 2, 3, 4, 5]:
+            v1 = int(center_value + 0.25 * max_value)
+            arr = np.zeros((3, 3, nb_channels), dtype=dtype)
+            arr_pad = iaa.pad(arr, top=1, mode="constant", cval=v1)
+            assert arr_pad.shape == (4, 3, nb_channels)
+            assert arr_pad.dtype == np.dtype(dtype)
+            assert np.all(arr_pad[0, 0, :] == v1)
+            assert np.all(arr_pad[0, 1, :] == v1)
+            assert np.all(arr_pad[0, 2, :] == v1)
+            assert np.all(arr_pad[1, 0, :] == 0)
+
+        # TODO reactivate this block when np 1.17 pad with mode=linear_ramp
+        #      uint and end_value>edge_value is fixed
+        """
+        arr = np.zeros((1, 1), dtype=dtype) + 100
+        arr_pad = iaa.pad(arr, top=4, mode="linear_ramp", cval=100)
+        assert arr_pad.shape == (5, 1)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert arr_pad[0, 0] == 100
+        assert arr_pad[1, 0] == 75
+        assert arr_pad[2, 0] == 50
+        assert arr_pad[3, 0] == 25
+        assert arr_pad[4, 0] == 0
+        
+        arr = np.zeros((1, 1), dtype=dtype) + 100
+        arr_pad = iaa.pad(arr, top=4, mode="linear_ramp", cval=0)
+        assert arr_pad.shape == (5, 1)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert arr_pad[0, 0] == 0
+        assert arr_pad[1, 0] == 25
+        assert arr_pad[2, 0] == 50
+        assert arr_pad[3, 0] == 75
+        assert arr_pad[4, 0] == 100
+        """
+
+        # test other channel numbers
+        value = int(center_value + 0.25 * max_value)
+        for nb_channels in [None, 1, 2, 3, 4, 5, 7, 11]:
+            arr = np.full((3, 3), value, dtype=dtype)
+            if nb_channels is not None:
+                arr = arr[..., np.newaxis]
+                arr = np.tile(arr, (1, 1, nb_channels))
+                for c in sm.xrange(nb_channels):
+                    arr[..., c] += c
+            arr_pad = iaa.pad(arr, top=1, mode="constant", cval=0)
+            assert arr_pad.dtype.name == np.dtype(dtype).name
+            if nb_channels is None:
+                assert arr_pad.shape == (4, 3)
+                assert np.all(arr_pad[0, :] == 0)
+                assert np.all(arr_pad[1:, :] == arr)
+            else:
+                assert arr_pad.shape == (4, 3, nb_channels)
+                assert np.all(arr_pad[0, :, :] == 0)
+                assert np.all(arr_pad[1:, :, :] == arr)
+
+        # multi-channel cval
+        value = int(center_value + 0.25 * max_value)
+        arr = np.full((3, 3, 5), value, dtype=dtype)
+        arr_pad = iaa.pad(arr, top=1, mode="constant", cval=(0, 1, 2, 3, 4))
+        assert np.all(arr_pad[0, :, 0] == 0)
+        assert np.all(arr_pad[0, :, 1] == 1)
+        assert np.all(arr_pad[0, :, 2] == 2)
+        assert np.all(arr_pad[0, :, 3] == 3)
+        assert np.all(arr_pad[0, :, 4] == 4)
+
+    # -------
+    # float
+    # -------
+    for dtype in [np.float16, np.float32, np.float64, np.float128]:
+        arr = np.zeros((3, 3), dtype=dtype) + 1.0
+
+        def _allclose(a, b):
+            atol = 1e-3 if dtype == np.float16 else 1e-7
+            return np.allclose(a, b, atol=atol, rtol=0)
+
+        arr_pad = iaa.pad(arr)
+        assert arr_pad.shape == (3, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad, arr)
+
+        arr_pad = iaa.pad(arr, top=1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, :], dtype([0, 0, 0]))
+
+        arr_pad = iaa.pad(arr, right=1)
+        assert arr_pad.shape == (3, 4)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[:, -1], dtype([0, 0, 0]))
+
+        arr_pad = iaa.pad(arr, bottom=1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[-1, :], dtype([0, 0, 0]))
+
+        arr_pad = iaa.pad(arr, left=1)
+        assert arr_pad.shape == (3, 4)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[:, 0], dtype([0, 0, 0]))
+
+        arr_pad = iaa.pad(arr, top=1, right=2, bottom=3, left=4)
+        assert arr_pad.shape == (3+(1+3), 3+(2+4))
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(np.max(arr_pad[0, :]), 0)
+        assert _allclose(np.max(arr_pad[:, -2:]), 0)
+        assert _allclose(np.max(arr_pad[-3, :]), 0)
+        assert _allclose(np.max(arr_pad[:, :4]), 0)
+
+        arr_pad = iaa.pad(arr, top=1, cval=0.2)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, :], dtype([0.2, 0.2, 0.2]))
+
+        v1 = 1000 ** (np.dtype(dtype).itemsize - 1)
+        arr_pad = iaa.pad(arr, top=1, cval=v1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, :], dtype([v1, v1, v1]))
+
+        v1 = (-1000) ** (np.dtype(dtype).itemsize - 1)
+        arr_pad = iaa.pad(arr, top=1, cval=v1)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, :], dtype([v1, v1, v1]))
+
+        arr = np.zeros((3, 3, 3), dtype=dtype) + 0.5
+        arr_pad = iaa.pad(arr, top=1)
+        assert arr_pad.shape == (4, 3, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, :, 0], dtype([0, 0, 0]))
+        assert _allclose(arr_pad[0, :, 1], dtype([0, 0, 0]))
+        assert _allclose(arr_pad[0, :, 2], dtype([0, 0, 0]))
+
+        arr = np.zeros((3, 3), dtype=dtype) + 0.5
+        arr[1, 1] = 0.75
+        arr_pad = iaa.pad(arr, top=1, mode="maximum")
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, 0], 0.5)
+        assert _allclose(arr_pad[0, 1], 0.75)
+        assert _allclose(arr_pad[0, 2], 0.50)
+
+        arr = np.zeros((3, 3), dtype=dtype)
+        arr_pad = iaa.pad(arr, top=1, mode="constant", cval=0.4)
+        assert arr_pad.shape == (4, 3)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, 0], 0.4)
+        assert _allclose(arr_pad[0, 1], 0.4)
+        assert _allclose(arr_pad[0, 2], 0.4)
+        assert _allclose(arr_pad[1, 0], 0.0)
+
+        for nb_channels in [1, 2, 3, 4, 5]:
+            arr = np.zeros((3, 3, nb_channels), dtype=dtype)
+            arr_pad = iaa.pad(arr, top=1, mode="constant", cval=0.4)
+            assert arr_pad.shape == (4, 3, nb_channels)
+            assert arr_pad.dtype == np.dtype(dtype)
+            assert _allclose(arr_pad[0, 0, :], 0.4)
+            assert _allclose(arr_pad[0, 1, :], 0.4)
+            assert _allclose(arr_pad[0, 2, :], 0.4)
+            assert _allclose(arr_pad[1, 0, :], 0.0)
+
+        arr = np.zeros((1, 1), dtype=dtype) + 0.6
+        arr_pad = iaa.pad(arr, top=4, mode="linear_ramp", cval=1.0)
+        assert arr_pad.shape == (5, 1)
+        assert arr_pad.dtype == np.dtype(dtype)
+        assert _allclose(arr_pad[0, 0], 1.0)
+        assert _allclose(arr_pad[1, 0], 0.9)
+        assert _allclose(arr_pad[2, 0], 0.8)
+        assert _allclose(arr_pad[3, 0], 0.7)
+        assert _allclose(arr_pad[4, 0], 0.6)
+
+        # test other channel numbers
+        value = 1000 ** (np.dtype(dtype).itemsize - 1)
+        for nb_channels in [None, 1, 2, 3, 4, 5, 7, 11]:
+            arr = np.full((3, 3), value, dtype=dtype)
+            if nb_channels is not None:
+                arr = arr[..., np.newaxis]
+                arr = np.tile(arr, (1, 1, nb_channels))
+                for c in sm.xrange(nb_channels):
+                    arr[..., c] += c
+            arr_pad = iaa.pad(arr, top=1, mode="constant", cval=0)
+            assert arr_pad.dtype.name == np.dtype(dtype).name
+            if nb_channels is None:
+                assert arr_pad.shape == (4, 3)
+                assert _allclose(arr_pad[0, :], 0)
+                assert _allclose(arr_pad[1:, :], arr)
+            else:
+                assert arr_pad.shape == (4, 3, nb_channels)
+                assert _allclose(arr_pad[0, :, :], 0)
+                assert _allclose(arr_pad[1:, :, :], arr)
+
+        # multi-channel cval
+        value = int(center_value + 0.25 * max_value)
+        arr = np.full((3, 3, 5), value, dtype=dtype)
+        arr_pad = iaa.pad(arr, top=1, mode="constant", cval=(0, 1, 2, 3, 4))
+        assert _allclose(arr_pad[0, :, 0], 0)
+        assert _allclose(arr_pad[0, :, 1], 1)
+        assert _allclose(arr_pad[0, :, 2], 2)
+        assert _allclose(arr_pad[0, :, 3], 3)
+        assert _allclose(arr_pad[0, :, 4], 4)
+
+    # -------
+    # bool
+    # -------
+    dtype = bool
+    arr = np.zeros((3, 3), dtype=dtype)
+    arr_pad = iaa.pad(arr)
+    assert arr_pad.shape == (3, 3)
+    # For some reason, arr_pad.dtype.type == dtype fails here for int64 but not for the other dtypes,
+    # even though int64 is the dtype of arr_pad. Also checked .name and .str for them -- all same value.
+    assert arr_pad.dtype == np.dtype(dtype)
+    assert np.all(arr_pad == arr)
+
+    arr_pad = iaa.pad(arr, top=1)
+    assert arr_pad.shape == (4, 3)
+    assert arr_pad.dtype == np.dtype(dtype)
+    assert np.all(arr_pad[0, :] == 0)
+
+    arr_pad = iaa.pad(arr, top=1, cval=True)
+    assert arr_pad.shape == (4, 3)
+    assert arr_pad.dtype == np.dtype(dtype)
+    assert np.all(arr_pad[0, :] == 1)
+
+
+def test_compute_paddings_for_aspect_ratio():
+    arr = np.zeros((4, 4), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 1.0)
+    assert top == 0
+    assert right == 0
+    assert bottom == 0
+    assert left == 0
+
+    arr = np.zeros((1, 4), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 1.0)
+    assert top == 1
+    assert right == 0
+    assert bottom == 2
+    assert left == 0
+
+    arr = np.zeros((4, 1), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 1.0)
+    assert top == 0
+    assert right == 2
+    assert bottom == 0
+    assert left == 1
+
+    arr = np.zeros((2, 4), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 1.0)
+    assert top == 1
+    assert right == 0
+    assert bottom == 1
+    assert left == 0
+
+    arr = np.zeros((4, 2), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 1.0)
+    assert top == 0
+    assert right == 1
+    assert bottom == 0
+    assert left == 1
+
+    arr = np.zeros((4, 4), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 0.5)
+    assert top == 2
+    assert right == 0
+    assert bottom == 2
+    assert left == 0
+
+    arr = np.zeros((4, 4), dtype=np.uint8)
+    top, right, bottom, left = \
+        iaa.compute_paddings_to_reach_aspect_ratio(arr, 2.0)
+    assert top == 0
+    assert right == 2
+    assert bottom == 0
+    assert left == 2
+
+
+def test_pad_to_aspect_ratio():
+    for dtype in [np.uint8, np.int32, np.float32]:
+        # aspect_ratio = 1.0
+        arr = np.zeros((4, 4), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+
+        arr = np.zeros((1, 4), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+
+        arr = np.zeros((4, 1), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+
+        arr = np.zeros((2, 4), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+
+        arr = np.zeros((4, 2), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+
+        # aspect_ratio != 1.0
+        arr = np.zeros((4, 4), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 8
+
+        arr = np.zeros((4, 4), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 0.5)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 8
+        assert arr_pad.shape[1] == 4
+
+        # 3d arr
+        arr = np.zeros((4, 2, 3), dtype=dtype)
+        arr_pad = iaa.pad_to_aspect_ratio(arr, 1.0)
+        assert arr_pad.dtype.type == dtype
+        assert arr_pad.shape[0] == 4
+        assert arr_pad.shape[1] == 4
+        assert arr_pad.shape[2] == 3
+
+    # cval
+    arr = np.zeros((4, 4), dtype=np.uint8) + 128
+    arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0)
+    assert arr_pad.shape[0] == 4
+    assert arr_pad.shape[1] == 8
+    assert np.max(arr_pad[:, 0:2]) == 0
+    assert np.max(arr_pad[:, -2:]) == 0
+    assert np.max(arr_pad[:, 2:-2]) == 128
+
+    arr = np.zeros((4, 4), dtype=np.uint8) + 128
+    arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0, cval=10)
+    assert arr_pad.shape[0] == 4
+    assert arr_pad.shape[1] == 8
+    assert np.max(arr_pad[:, 0:2]) == 10
+    assert np.max(arr_pad[:, -2:]) == 10
+    assert np.max(arr_pad[:, 2:-2]) == 128
+
+    arr = np.zeros((4, 4), dtype=np.float32) + 0.5
+    arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0, cval=0.0)
+    assert arr_pad.shape[0] == 4
+    assert arr_pad.shape[1] == 8
+    assert 0 - 1e-6 <= np.max(arr_pad[:, 0:2]) <= 0 + 1e-6
+    assert 0 - 1e-6 <= np.max(arr_pad[:, -2:]) <= 0 + 1e-6
+    assert 0.5 - 1e-6 <= np.max(arr_pad[:, 2:-2]) <= 0.5 + 1e-6
+
+    arr = np.zeros((4, 4), dtype=np.float32) + 0.5
+    arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0, cval=0.1)
+    assert arr_pad.shape[0] == 4
+    assert arr_pad.shape[1] == 8
+    assert 0.1 - 1e-6 <= np.max(arr_pad[:, 0:2]) <= 0.1 + 1e-6
+    assert 0.1 - 1e-6 <= np.max(arr_pad[:, -2:]) <= 0.1 + 1e-6
+    assert 0.5 - 1e-6 <= np.max(arr_pad[:, 2:-2]) <= 0.5 + 1e-6
+
+    # mode
+    arr = np.zeros((4, 4), dtype=np.uint8) + 128
+    arr[1:3, 1:3] = 200
+    arr_pad = iaa.pad_to_aspect_ratio(arr, 2.0, mode="maximum")
+    assert arr_pad.shape[0] == 4
+    assert arr_pad.shape[1] == 8
+    assert np.max(arr_pad[0:1, 0:2]) == 128
+    assert np.max(arr_pad[1:3, 0:2]) == 200
+    assert np.max(arr_pad[3:, 0:2]) == 128
+    assert np.max(arr_pad[0:1, -2:]) == 128
+    assert np.max(arr_pad[1:3, -2:]) == 200
+    assert np.max(arr_pad[3:, -2:]) == 128
+
+    # TODO add tests for return_pad_values=True
+
+
+class Test_compute_paddings_to_reach_multiples_of(unittest.TestCase):
+    def test_zero_height_array(self):
+        arr = np.zeros((0, 2, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, 2, 2)
+        assert paddings == (1, 0, 1, 0)
+
+    def test_zero_width_array(self):
+        arr = np.zeros((2, 0, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, 2, 2)
+        assert paddings == (0, 1, 0, 1)
+
+    def test_both_none(self):
+        arr = np.zeros((1, 1, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, None, None)
+        assert paddings == (0, 0, 0, 0)
+
+    def test_height_is_none(self):
+        arr = np.zeros((1, 1, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, None, 2)
+        assert paddings == (0, 1, 0, 0)
+
+    def test_width_is_none(self):
+        arr = np.zeros((1, 1, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, 2, None)
+        assert paddings == (0, 0, 1, 0)
+
+    def test_height_is_one(self):
+        arr = np.zeros((1, 1, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, 1, 2)
+        assert paddings == (0, 1, 0, 0)
+
+    def test_width_is_one(self):
+        arr = np.zeros((1, 1, 3), dtype=np.uint8)
+        paddings = iaa.compute_paddings_to_reach_multiples_of(arr, 2, 1)
+        assert paddings == (0, 0, 1, 0)
+
+    def test_various_widths(self):
+        nb_channels_lst = [None, 1, 3, 4]
+        amounts = [2, 3, 4, 5, 6, 7, 8, 9]
+        expecteds = [
+            (0, 1, 0, 0),
+            (0, 1, 0, 0),
+            (0, 2, 0, 1),
+            (0, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 1, 0, 1),
+            (0, 2, 0, 1),
+            (0, 2, 0, 2)
+        ]
+
+        for amount, expected in zip(amounts, expecteds):
+            for nb_channels in nb_channels_lst:
+                with self.subTest(width_multiple=amount,
+                                  nb_channels=nb_channels):
+                    if nb_channels is None:
+                        arr = np.zeros((3, 5), dtype=np.uint8)
+                    else:
+                        arr = np.zeros((3, 5, nb_channels), dtype=np.uint8)
+
+                    paddings = iaa.compute_paddings_to_reach_multiples_of(
+                        arr, None, amount)
+
+                    assert paddings == expected
+
+    def test_various_heights(self):
+        nb_channels_lst = [None, 1, 3, 4]
+        amounts = [2, 3, 4, 5, 6, 7, 8, 9]
+        expecteds = [
+            (0, 0, 1, 0),
+            (0, 0, 1, 0),
+            (1, 0, 2, 0),
+            (0, 0, 0, 0),
+            (0, 0, 1, 0),
+            (1, 0, 1, 0),
+            (1, 0, 2, 0),
+            (2, 0, 2, 0)
+        ]
+        for amount, expected in zip(amounts, expecteds):
+            for nb_channels in nb_channels_lst:
+                with self.subTest(height_multiple=amount,
+                                  nb_channels=nb_channels):
+                    if nb_channels is None:
+                        arr = np.zeros((5, 3), dtype=np.uint8)
+                    else:
+                        arr = np.zeros((5, 3, nb_channels), dtype=np.uint8)
+
+                    paddings = iaa.compute_paddings_to_reach_multiples_of(
+                        arr, amount, None)
+
+                    assert paddings == expected
+
+
+class Test_pad_to_multiples_of(unittest.TestCase):
+    @mock.patch("imgaug.augmenters.size.compute_paddings_to_reach_multiples_of")
+    @mock.patch("imgaug.augmenters.size.pad")
+    def test_mocked(self, mock_pad, mock_compute_pads):
+        mock_compute_pads.return_value = (1, 2, 3, 4)
+        mock_pad.return_value = "padded_array"
+
+        arr = np.ones((3, 5, 1), dtype=np.uint8)
+
+        arr_padded = iaa.pad_to_multiples_of(
+            arr, 10, 20, mode="foo", cval=100)
+
+        mock_compute_pads.assert_called_once_with(arr, 10, 20)
+        mock_pad.assert_called_once_with(arr, top=1, right=2, bottom=3,
+                                         left=4, mode="foo", cval=100)
+        assert arr_padded == "padded_array"
+
+    @mock.patch("imgaug.augmenters.size.compute_paddings_to_reach_multiples_of")
+    @mock.patch("imgaug.augmenters.size.pad")
+    def test_mocked_return_pad_amounts(self, mock_pad, mock_compute_pads):
+        mock_compute_pads.return_value = (1, 2, 3, 4)
+        mock_pad.return_value = "padded_array"
+
+        arr = np.ones((3, 5, 1), dtype=np.uint8)
+
+        arr_padded, paddings = iaa.pad_to_multiples_of(
+            arr, 10, 20, mode="foo", cval=100, return_pad_amounts=True)
+
+        mock_compute_pads.assert_called_once_with(arr, 10, 20)
+        mock_pad.assert_called_once_with(arr, top=1, right=2, bottom=3,
+                                         left=4, mode="foo", cval=100)
+        assert arr_padded == "padded_array"
+        assert paddings == (1, 2, 3, 4)
+
+    def test_integrationtest(self):
+        dtypes = [np.uint8, np.int32, np.float32]
+        nb_channels_lst = [None, 1, 3, 4]
+
+        for dtype in dtypes:
+            dtype = np.dtype(dtype)
+            for nb_channels in nb_channels_lst:
+                with self.subTest(dtype=dtype.name, nb_channels=nb_channels):
+                    if nb_channels is None:
+                        arr = np.ones((3, 5), dtype=dtype)
+                    else:
+                        arr = np.ones((3, 5, nb_channels), dtype=dtype)
+
+                    arr_padded = iaa.pad_to_multiples_of(arr, 7, 11, cval=2)
+
+                    if nb_channels is None:
+                        base_area = 3*5
+                        new_area = 7*11 - base_area
+                        assert arr_padded.shape == (7, 11)
+                        assert np.sum(arr_padded) == 1*base_area + 2*new_area
+                    else:
+                        base_area = 3*5*nb_channels
+                        new_area = 7*11*nb_channels - base_area
+                        assert arr_padded.shape == (7, 11, nb_channels)
+                        assert np.sum(arr_padded) == 1*base_area + 2*new_area
+
+
 class TestResize(unittest.TestCase):
     def setUp(self):
         reseed()
@@ -184,6 +802,38 @@ class TestResize(unittest.TestCase):
             ia.Polygon([(1, 1), (7, 1), (7, 3), (1, 3)]),
         ]
         return ia.PolygonsOnImage(polygons, shape=self.image3d.shape)
+
+    @property
+    def lsoi2d(self):
+        lss = [
+            ia.LineString([(0, 0), (8, 0), (8, 4)]),
+            ia.LineString([(1, 1), (7, 1), (7, 3), (1, 3)]),
+        ]
+        return ia.LineStringsOnImage(lss, shape=self.image2d.shape)
+
+    @property
+    def lsoi3d(self):
+        lss = [
+            ia.LineString([(0, 0), (8, 0), (8, 4)]),
+            ia.LineString([(1, 1), (7, 1), (7, 3), (1, 3)]),
+        ]
+        return ia.LineStringsOnImage(lss, shape=self.image3d.shape)
+
+    @property
+    def bbsoi2d(self):
+        bbs = [
+            ia.BoundingBox(x1=0, y1=0, x2=8, y2=4),
+            ia.BoundingBox(x1=1, y1=2, x2=6, y2=3),
+        ]
+        return ia.BoundingBoxesOnImage(bbs, shape=self.image2d.shape)
+
+    @property
+    def bbsoi3d(self):
+        bbs = [
+            ia.BoundingBox(x1=0, y1=0, x2=8, y2=4),
+            ia.BoundingBox(x1=1, y1=2, x2=6, y2=3),
+        ]
+        return ia.BoundingBoxesOnImage(bbs, shape=self.image3d.shape)
 
     @classmethod
     def _aspect_ratio(cls, image):
@@ -280,14 +930,38 @@ class TestResize(unittest.TestCase):
 
     def test_polygons_on_3d_img_and_with_width_int_and_height_int(self):
         aug = iaa.Resize({"width": 12, "height": 8})
-        psoi_aug = aug.augment_polygons(self.psoi3d)
-        assert len(psoi_aug.polygons) == 2
-        assert psoi_aug.shape == (8, 12, 3)
-        assert psoi_aug.polygons[0].exterior_almost_equals(
-            ia.Polygon([(0, 0), (12, 0), (12, 8)])
+        cbaoi_aug = aug.augment_polygons(self.psoi3d)
+        assert len(cbaoi_aug.items) == 2
+        assert cbaoi_aug.shape == (8, 12, 3)
+        assert cbaoi_aug.items[0].coords_almost_equals(
+            [(0, 0), (12, 0), (12, 8)]
         )
-        assert psoi_aug.polygons[1].exterior_almost_equals(
-            ia.Polygon([(1.5, 2), (10.5, 2), (10.5, 6), (1.5, 6)])
+        assert cbaoi_aug.items[1].coords_almost_equals(
+            [(1.5, 2), (10.5, 2), (10.5, 6), (1.5, 6)]
+        )
+
+    def test_line_strings_on_3d_img_and_with_width_int_and_height_int(self):
+        aug = iaa.Resize({"width": 12, "height": 8})
+        cbaoi_aug = aug.augment_line_strings(self.lsoi3d)
+        assert len(cbaoi_aug.items) == 2
+        assert cbaoi_aug.shape == (8, 12, 3)
+        assert cbaoi_aug.items[0].coords_almost_equals(
+            [(0, 0), (12, 0), (12, 8)]
+        )
+        assert cbaoi_aug.items[1].coords_almost_equals(
+            [(1.5, 2), (10.5, 2), (10.5, 6), (1.5, 6)]
+        )
+
+    def test_bounding_boxes_on_3d_img_and_with_width_int_and_height_int(self):
+        aug = iaa.Resize({"width": 12, "height": 8})
+        bbsoi_aug = aug.augment_bounding_boxes(self.bbsoi3d)
+        assert len(bbsoi_aug.bounding_boxes) == 2
+        assert bbsoi_aug.shape == (8, 12, 3)
+        assert bbsoi_aug.bounding_boxes[0].coords_almost_equals(
+            [(0, 0), (12, 8)]
+        )
+        assert bbsoi_aug.bounding_boxes[1].coords_almost_equals(
+            [((1/8)*12, (2/4)*8), ((6/8)*12, (3/4)*8)]
         )
 
     def test_keypoints_on_2d_img_and_with_width_float_and_height_int(self):
@@ -302,14 +976,38 @@ class TestResize(unittest.TestCase):
 
     def test_polygons_on_2d_img_and_with_width_float_and_height_int(self):
         aug = iaa.Resize({"width": 3.0, "height": 8})
-        psoi_aug = aug.augment_polygons(self.psoi2d)
-        assert len(psoi_aug.polygons) == 2
-        assert psoi_aug.shape == (8, 24)
-        assert psoi_aug.polygons[0].exterior_almost_equals(
-            ia.Polygon([(3*0, 0), (3*8, 0), (3*8, 8)])
+        cbaoi_aug = aug.augment_polygons(self.psoi2d)
+        assert len(cbaoi_aug.items) == 2
+        assert cbaoi_aug.shape == (8, 24)
+        assert cbaoi_aug.items[0].coords_almost_equals(
+            [(3*0, 0), (3*8, 0), (3*8, 8)]
         )
-        assert psoi_aug.polygons[1].exterior_almost_equals(
-            ia.Polygon([(3*1, 2), (3*7, 2), (3*7, 6), (3*1, 6)])
+        assert cbaoi_aug.items[1].coords_almost_equals(
+            [(3*1, 2), (3*7, 2), (3*7, 6), (3*1, 6)]
+        )
+
+    def test_line_strings_on_2d_img_and_with_width_float_and_height_int(self):
+        aug = iaa.Resize({"width": 3.0, "height": 8})
+        cbaoi_aug = aug.augment_line_strings(self.lsoi2d)
+        assert len(cbaoi_aug.items) == 2
+        assert cbaoi_aug.shape == (8, 24)
+        assert cbaoi_aug.items[0].coords_almost_equals(
+            [(3*0, 0), (3*8, 0), (3*8, 8)]
+        )
+        assert cbaoi_aug.items[1].coords_almost_equals(
+            [(3*1, 2), (3*7, 2), (3*7, 6), (3*1, 6)]
+        )
+
+    def test_bounding_boxes_on_2d_img_and_with_width_float_and_height_int(self):
+        aug = iaa.Resize({"width": 3.0, "height": 8})
+        bbsoi_aug = aug.augment_bounding_boxes(self.bbsoi2d)
+        assert len(bbsoi_aug.bounding_boxes) == 2
+        assert bbsoi_aug.shape == (8, 24)
+        assert bbsoi_aug.bounding_boxes[0].coords_almost_equals(
+            [(3*0, 0), (3*8, 8)]
+        )
+        assert bbsoi_aug.bounding_boxes[1].coords_almost_equals(
+            [(3*1, (2/4)*8), (3*6, (3/4)*8)]
         )
 
     def test_empty_keypoints(self):
@@ -325,6 +1023,20 @@ class TestResize(unittest.TestCase):
         psoi_aug = aug.augment_polygons(psoi)
         assert len(psoi_aug.polygons) == 0
         assert psoi_aug.shape == (8, 12, 3)
+
+    def test_empty_line_strings(self):
+        aug = iaa.Resize({"height": 8, "width": 12})
+        lsoi = ia.LineStringsOnImage([], shape=(4, 8, 3))
+        lsoi_aug = aug.augment_line_strings(lsoi)
+        assert len(lsoi_aug.items) == 0
+        assert lsoi_aug.shape == (8, 12, 3)
+
+    def test_empty_bounding_boxes(self):
+        aug = iaa.Resize({"height": 8, "width": 12})
+        bbsoi = ia.BoundingBoxesOnImage([], shape=(4, 8, 3))
+        bbsoi_aug = aug.augment_bounding_boxes(bbsoi)
+        assert len(bbsoi_aug.bounding_boxes) == 0
+        assert bbsoi_aug.shape == (8, 12, 3)
 
     def test_size_is_list_of_ints(self):
         aug = iaa.Resize([12, 14])
@@ -707,6 +1419,53 @@ class TestResize(unittest.TestCase):
         assert params[0].value == 1
         assert params[1].value == "nearest"
 
+    def test_dtypes_roughly(self):
+        # most of the dtype testing is done for imresize_many_images()
+        # so we focus here on a rough test that merely checks if the dtype
+        # does not change
+
+        # these dtypes should be kept in sync with imresize_many_images()
+        dtypes = [
+            "uint8",
+            "uint16",
+            "int8",
+            "int16",
+            "float16",
+            "float32",
+            "float64",
+            "bool"
+        ]
+
+        for dt in dtypes:
+            for ip in ["nearest", "cubic"]:
+                aug = iaa.Resize({"height": 10, "width": 20}, interpolation=ip)
+                for is_list in [False, True]:
+                    with self.subTest(dtype=dt, interpolation=ip,
+                                      is_list=is_list):
+                        image = np.full((9, 19, 3), 1, dtype=dt)
+                        images = [image, image]
+                        if not is_list:
+                            images = np.array(images, dtype=dt)
+
+                        images_aug = aug(images=images)
+
+                        if is_list:
+                            assert isinstance(images_aug, list)
+                        else:
+                            assert ia.is_np_array(images_aug)
+
+                        assert len(images_aug) == 2
+                        for image_aug in images_aug:
+                            assert image_aug.dtype.name == dt
+                            assert image_aug.shape == (10, 20, 3)
+                            assert np.all(image_aug >= 1 - 1e-4)
+
+    def test_pickleable(self):
+        aug = iaa.Resize({"height": (10, 30), "width": (10, 30)},
+                         interpolation=["nearest", "linear"],
+                         random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=3, shape=(50, 50, 1))
+
 
 class TestPad(unittest.TestCase):
     def setUp(self):
@@ -727,7 +1486,22 @@ class TestPad(unittest.TestCase):
     def kpsoi(self):
         kps = [ia.Keypoint(x=0, y=0), ia.Keypoint(x=1, y=1),
                ia.Keypoint(x=2, y=2)]
-        return [ia.KeypointsOnImage(kps, shape=self.image.shape)]
+        return ia.KeypointsOnImage(kps, shape=self.image.shape)
+
+    @property
+    def psoi(self):
+        polys = [ia.Polygon([(1, 1), (2, 1), (2, 2)])]
+        return ia.PolygonsOnImage(polys, shape=self.image.shape)
+
+    @property
+    def lsoi(self):
+        ls = [ia.LineString([(1, 1), (2, 1), (2, 2)])]
+        return ia.LineStringsOnImage(ls, shape=self.image.shape)
+
+    @property
+    def bbsoi(self):
+        bbs = [ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)]
+        return ia.BoundingBoxesOnImage(bbs, shape=self.image.shape)
 
     @property
     def heatmap(self):
@@ -799,7 +1573,7 @@ class TestPad(unittest.TestCase):
                 observed = aug.augment_images([self.image])
                 assert array_equal_lists(observed, [base_img_padded])
 
-    def test_pad_keypoints_by_1px_each_side_on_its_own(self):
+    def _test_pad_cbaoi_by_1px_each_side_on_its_own(self, cbaoi, augf_name):
         pads = [
             (1, 0, 0, 0),
             (0, 1, 0, 0),
@@ -816,13 +1590,27 @@ class TestPad(unittest.TestCase):
                 image_padded_shape[0] += top + bottom
                 image_padded_shape[1] += left + right
 
-                kpsoi = self.kpsoi
-                expected = [kpsoi[0].shift(x=left, y=top)]
+                observed = getattr(aug, augf_name)(cbaoi)
 
-                observed = aug.augment_keypoints(kpsoi)
+                expected = shift_cbaoi(cbaoi, left=left, top=top)
+                expected.shape = tuple(image_padded_shape)
+                assert_cbaois_equal(observed, expected)
 
-                assert observed[0].shape == tuple(image_padded_shape)
-                assert keypoints_equal(observed, expected)
+    def test_pad_keypoints_by_1px_each_side_on_its_own(self):
+        self._test_pad_cbaoi_by_1px_each_side_on_its_own(
+            self.kpsoi, "augment_keypoints")
+
+    def test_pad_polygons_by_1px_each_side_on_its_own(self):
+        self._test_pad_cbaoi_by_1px_each_side_on_its_own(
+            self.psoi, "augment_polygons")
+
+    def test_pad_line_strings_by_1px_each_side_on_its_own(self):
+        self._test_pad_cbaoi_by_1px_each_side_on_its_own(
+            self.lsoi, "augment_line_strings")
+
+    def test_pad_bounding_boxes_by_1px_each_side_on_its_own(self):
+        self._test_pad_cbaoi_by_1px_each_side_on_its_own(
+            self.bbsoi, "augment_bounding_boxes")
 
     def test_pad_heatmaps_by_1px_each_side_on_its_own(self):
         pads = [
@@ -886,6 +1674,7 @@ class TestPad(unittest.TestCase):
                 assert observed.shape == tuple(image_padded_shape)
                 assert np.array_equal(observed.get_arr(), segmaps_arr_padded)
 
+    # TODO split up, add similar tests for polygons/LS/BBs
     def test_pad_each_side_on_its_own_by_tuple_of_ints(self):
         def _to_range_tuple(val):
             return val if isinstance(val, tuple) else (val, val)
@@ -930,7 +1719,7 @@ class TestPad(unittest.TestCase):
                                     )
                                 )
                                 keypoints_padded.append(
-                                    self.kpsoi[0].shift(x=left_val, y=top_val))
+                                    self.kpsoi.shift(x=left_val, y=top_val))
 
                 movements = []
                 movements_det = []
@@ -966,13 +1755,14 @@ class TestPad(unittest.TestCase):
 
                     observed = aug.augment_keypoints(self.kpsoi)
                     assert any([
-                        keypoints_equal(observed, [kp])
+                        keypoints_equal(observed, kp)
                         for kp
                         in keypoints_padded])
 
                 assert len(set(movements)) == 3
                 assert len(set(movements_det)) == 1
 
+    # TODO split up, add similar tests for polygons/LS/BBs
     def test_pad_each_side_on_its_own_by_list_of_ints(self):
         # test pad by list of exact pixel values
         pads = [
@@ -1008,7 +1798,7 @@ class TestPad(unittest.TestCase):
                                 )
                             )
                             keypoints_padded.append(
-                                self.kpsoi[0].shift(x=left_val, y=top_val))
+                                self.kpsoi.shift(x=left_val, y=top_val))
 
             movements = []
             movements_det = []
@@ -1041,7 +1831,7 @@ class TestPad(unittest.TestCase):
 
                 observed = aug.augment_keypoints(self.kpsoi)
                 assert any([
-                    keypoints_equal(observed, [kp])
+                    keypoints_equal(observed, kp)
                     for kp
                     in keypoints_padded])
 
@@ -1210,13 +2000,11 @@ class TestPad(unittest.TestCase):
         assert len(psoi_aug) == 2
         for psoi_aug_i in psoi_aug:
             assert psoi_aug_i.shape == (10, 8, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(4, 2), (8, 2), (8, 6), (4, 6)])
-            )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(5, 3), (9, 3), (9, 7), (5, 7)])
-            )
+            assert len(psoi_aug_i.items) == 2
+            assert psoi_aug_i.items[0].coords_almost_equals(
+                [(4, 2), (8, 2), (8, 6), (4, 6)])
+            assert psoi_aug_i.items[1].coords_almost_equals(
+                [(5, 3), (9, 3), (9, 7), (5, 7)])
 
     def test_pad_polygons_by_tuple_of_fixed_ints_with_keep_size(self):
         aug = iaa.Pad((2, 0, 4, 4), keep_size=True)
@@ -1227,18 +2015,90 @@ class TestPad(unittest.TestCase):
         assert len(psoi_aug) == 2
         for psoi_aug_i in psoi_aug:
             assert psoi_aug_i.shape == (4, 4, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(4*(4/8), 4*(2/10)),
-                            (4*(8/8), 4*(2/10)),
-                            (4*(8/8), 4*(6/10)),
-                            (4*(4/8), 4*(6/10))])
+            assert len(psoi_aug_i.items) == 2
+            assert psoi_aug_i.items[0].coords_almost_equals(
+                [(4*(4/8), 4*(2/10)),
+                 (4*(8/8), 4*(2/10)),
+                 (4*(8/8), 4*(6/10)),
+                 (4*(4/8), 4*(6/10))]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(4*(5/8), 4*(3/10)),
-                            (4*(9/8), 4*(3/10)),
-                            (4*(9/8), 4*(7/10)),
-                            (4*(5/8), 4*(7/10))])
+            assert psoi_aug_i.items[1].coords_almost_equals(
+                [(4*(5/8), 4*(3/10)),
+                 (4*(9/8), 4*(3/10)),
+                 (4*(9/8), 4*(7/10)),
+                 (4*(5/8), 4*(7/10))]
+            )
+
+    def test_pad_line_strings_by_tuple_of_fixed_ints_without_keep_size(self):
+        aug = iaa.Pad((2, 0, 4, 4), keep_size=False)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(4, 4, 3))
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 8, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4, 2), (8, 2), (8, 6), (4, 6)])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(5, 3), (9, 3), (9, 7), (5, 7)])
+
+    def test_pad_line_strings_by_tuple_of_fixed_ints_with_keep_size(self):
+        aug = iaa.Pad((2, 0, 4, 4), keep_size=True)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(4, 4, 3))
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (4, 4, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4*(4/8), 4*(2/10)),
+                 (4*(8/8), 4*(2/10)),
+                 (4*(8/8), 4*(6/10)),
+                 (4*(4/8), 4*(6/10))]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(4*(5/8), 4*(3/10)),
+                 (4*(9/8), 4*(3/10)),
+                 (4*(9/8), 4*(7/10)),
+                 (4*(5/8), 4*(7/10))]
+            )
+
+    def test_pad_bounding_boxes_by_tuple_of_fixed_ints_without_keep_size(self):
+        aug = iaa.Pad((2, 0, 4, 4), keep_size=False)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=1, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(4, 4, 3))
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (10, 8, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(4+0, 2+0), (4+4, 2+4)]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(4+1, 2+1), (4+3, 2+4)]
+            )
+
+    def test_pad_bounding_boxes_by_tuple_of_fixed_ints_with_keep_size(self):
+        aug = iaa.Pad((2, 0, 4, 4), keep_size=True)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=1, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(4, 4, 3))
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (4, 4, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(4*((4+0)/8), 4*((2+0)/10)), (4*((4+4)/8), 4*((2+4)/10))]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(4*((4+1)/8), 4*((2+1)/10)), (4*((4+3)/8), 4*((2+4)/10))]
             )
 
     def test_pad_mode_is_stochastic_parameter(self):
@@ -1460,16 +2320,9 @@ class TestPad(unittest.TestCase):
 
                 assert np.array_equal(observed, image_padded)
 
-    def test_pad_keypoints_each_side_by_100_percent_without_keep_size(self):
-        image = np.zeros((4, 4), dtype=np.uint8)
-        image[0, 0] = 255
-        image[3, 0] = 255
-        image[0, 3] = 255
-        image[3, 3] = 255
-        height, width = image.shape[0:2]
-        kps = [ia.Keypoint(x=0, y=0), ia.Keypoint(x=3, y=3),
-               ia.Keypoint(x=3, y=3)]
-        keypoints = [ia.KeypointsOnImage(kps, shape=(4, 4))]
+    def _test_pad_cba_each_side_by_100_percent_without_keep_size(
+            self, augf_name, cbaoi):
+        height, width = cbaoi.shape[0:2]
         pads = [
             (1.0, 0, 0, 0),
             (0, 1.0, 0, 0),
@@ -1482,11 +2335,47 @@ class TestPad(unittest.TestCase):
                 top_px = int(top * height)
                 left_px = int(left * width)
                 aug = iaa.Pad(percent=pad, keep_size=False)
-                keypoints_moved = [keypoints[0].shift(x=left_px, y=top_px)]
+                cbaoi_moved = shift_cbaoi(cbaoi, left=left_px, top=top_px)
+                cbaoi_moved.shape = (
+                    int(height+top*height+bottom*height),
+                    int(width+left*width+right*width)
+                )
 
-                observed = aug.augment_keypoints(keypoints)
+                observed = getattr(aug, augf_name)(cbaoi)
 
-                assert keypoints_equal(observed, keypoints_moved)
+                assert_cbaois_equal(observed, cbaoi_moved)
+
+    def test_pad_keypoints_each_side_by_100_percent_without_keep_size(self):
+        height, width = (4, 4)
+        kps = [ia.Keypoint(x=0, y=0), ia.Keypoint(x=3, y=3),
+               ia.Keypoint(x=3, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(height, width))
+        self._test_pad_cba_each_side_by_100_percent_without_keep_size(
+            "augment_keypoints", kpsoi)
+
+    def test_pad_polygons_each_side_by_100_percent_without_keep_size(self):
+        height, width = (4, 4)
+        polys = [ia.Polygon([(0, 0), (4, 0), (4, 4)]),
+                 ia.Polygon([(1, 2), (2, 3), (0, 4)])]
+        psoi = ia.PolygonsOnImage(polys, shape=(height, width))
+        self._test_pad_cba_each_side_by_100_percent_without_keep_size(
+            "augment_polygons", psoi)
+
+    def test_pad_line_strings_each_side_by_100_percent_without_keep_size(self):
+        height, width = (4, 4)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4)]),
+               ia.LineString([(1, 2), (2, 3), (0, 4)])]
+        lsoi = ia.LineStringsOnImage(lss, shape=(height, width))
+        self._test_pad_cba_each_side_by_100_percent_without_keep_size(
+            "augment_line_strings", lsoi)
+
+    def test_pad_bbs_each_side_by_100_percent_without_keep_size(self):
+        height, width = (4, 4)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=2, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(height, width))
+        self._test_pad_cba_each_side_by_100_percent_without_keep_size(
+            "augment_bounding_boxes", bbsoi)
 
     def test_pad_heatmaps_smaller_than_img_by_floats_without_keep_size(self):
         # pad smaller heatmaps
@@ -1634,45 +2523,127 @@ class TestPad(unittest.TestCase):
 
     def test_pad_polygons_by_floats_without_keep_size(self):
         aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=False)
-        psoi = ia.PolygonsOnImage([
+        cbaoi = ia.PolygonsOnImage([
             ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
             ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])
         ], shape=(4, 4, 3))
-        psoi_aug = aug.augment_polygons([psoi, psoi])
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (10, 8, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(4, 2), (8, 2), (8, 6), (4, 6)])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 8, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4, 2), (8, 2), (8, 6), (4, 6)]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(5, 3), (9, 3), (9, 7), (5, 7)])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(5, 3), (9, 3), (9, 7), (5, 7)]
             )
 
     def test_pad_polygons_by_floats_with_keep_size(self):
         # polygons, with keep_size=True
         aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=True)
-        psoi = ia.PolygonsOnImage([
+        cbaoi = ia.PolygonsOnImage([
             ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
             ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])
         ], shape=(4, 4, 3))
-        psoi_aug = aug.augment_polygons([psoi, psoi])
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (4, 4, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(4*(4/8), 4*(2/10)),
-                            (4*(8/8), 4*(2/10)),
-                            (4*(8/8), 4*(6/10)),
-                            (4*(4/8), 4*(6/10))])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (4, 4, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4*(4/8), 4*(2/10)),
+                 (4*(8/8), 4*(2/10)),
+                 (4*(8/8), 4*(6/10)),
+                 (4*(4/8), 4*(6/10))]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(4*(5/8), 4*(3/10)),
-                            (4*(9/8), 4*(3/10)),
-                            (4*(9/8), 4*(7/10)),
-                            (4*(5/8), 4*(7/10))])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(4*(5/8), 4*(3/10)),
+                 (4*(9/8), 4*(3/10)),
+                 (4*(9/8), 4*(7/10)),
+                 (4*(5/8), 4*(7/10))]
+            )
+
+    def test_pad_line_strings_by_floats_without_keep_size(self):
+        aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=False)
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+            ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])
+        ], shape=(4, 4, 3))
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 8, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4, 2), (8, 2), (8, 6), (4, 6)]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(5, 3), (9, 3), (9, 7), (5, 7)]
+            )
+
+    def test_pad_line_strings_by_floats_with_keep_size(self):
+        # polygons, with keep_size=True
+        aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=True)
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+            ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])
+        ], shape=(4, 4, 3))
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (4, 4, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(4*(4/8), 4*(2/10)),
+                 (4*(8/8), 4*(2/10)),
+                 (4*(8/8), 4*(6/10)),
+                 (4*(4/8), 4*(6/10))]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(4*(5/8), 4*(3/10)),
+                 (4*(9/8), 4*(3/10)),
+                 (4*(9/8), 4*(7/10)),
+                 (4*(5/8), 4*(7/10))]
+            )
+
+    def test_pad_bounding_boxes_by_floats_without_keep_size(self):
+        aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=False)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=2, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(4, 4, 3))
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (10, 8, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(int(1.0*4+0), int(0.5*4+0)),
+                 (int(1.0*4+4), int(0.5*4+4))]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(int(1.0*4+1), int(0.5*4+2)),
+                 (int(1.0*4+3), int(0.5*4+4))]
+            )
+
+    def test_pad_bounding_boxes_by_floats_with_keep_size(self):
+        # BBs, with keep_size=True
+        aug = iaa.Pad(percent=(0.5, 0, 1.0, 1.0), keep_size=True)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=2, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(4, 4, 3))
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (4, 4, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(4*(4/8), 4*(2/10)),
+                 (4*(8/8), 4*(6/10))]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(4*(5/8), 4*(4/10)),
+                 (4*(7/8), 4*(6/10))]
             )
 
     def test_pad_by_tuple_of_floats_at_top_side_without_keep_size(self):
@@ -1739,6 +2710,34 @@ class TestPad(unittest.TestCase):
         assert seen[2] == 0
         assert seen[3] == 0
         assert 250 - 50 < seen[4] < 250 + 50
+
+    @classmethod
+    def _test_pad_empty_cba(cls, augf_name, cbaoi):
+        aug = iaa.Pad(px=(1, 2, 3, 4), keep_size=False)
+
+        cbaoi_aug = getattr(aug, augf_name)(cbaoi)
+
+        expected = cbaoi.deepcopy()
+        expected.shape = tuple(
+            [1+expected.shape[0]+3, 4+expected.shape[1]+2]
+            + list(expected.shape[2:]))
+        assert_cbaois_equal(cbaoi_aug, expected)
+
+    def test_pad_empty_keypoints(self):
+        cbaoi = ia.KeypointsOnImage([], shape=(2, 4, 3))
+        self._test_pad_empty_cba("augment_keypoints", cbaoi)
+
+    def test_pad_empty_polygons(self):
+        cbaoi = ia.PolygonsOnImage([], shape=(2, 4, 3))
+        self._test_pad_empty_cba("augment_polygons", cbaoi)
+
+    def test_pad_empty_line_strings(self):
+        cbaoi = ia.LineStringsOnImage([], shape=(2, 4, 3))
+        self._test_pad_empty_cba("augment_line_strings", cbaoi)
+
+    def test_pad_empty_bounding_boxes(self):
+        cbaoi = ia.BoundingBoxesOnImage([], shape=(2, 4, 3))
+        self._test_pad_empty_cba("augment_bounding_boxes", cbaoi)
 
     def test_zero_sized_axes_no_keep_size(self):
         shapes = [
@@ -1865,6 +2864,10 @@ class TestPad(unittest.TestCase):
                     assert np.all(_isclose(image_aug[mask],
                                            np.float128(value)))
 
+    def test_pickleable(self):
+        aug = iaa.Pad((0, 10), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5)
+
 
 class TestCrop(unittest.TestCase):
     def setUp(self):
@@ -1886,8 +2889,26 @@ class TestCrop(unittest.TestCase):
     def kpsoi(self):
         kps = [ia.Keypoint(x=0, y=0), ia.Keypoint(x=1, y=1),
                ia.Keypoint(x=2, y=2)]
-        kpsoi = [ia.KeypointsOnImage(kps, shape=self.image.shape)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=self.image.shape)
         return kpsoi
+
+    @property
+    def psoi(self):
+        ps = [ia.Polygon([(1, 1), (2, 1), (2, 2)])]
+        psoi = ia.PolygonsOnImage(ps, shape=self.image.shape)
+        return psoi
+
+    @property
+    def lsoi(self):
+        ls = [ia.LineString([(1, 1), (2, 1), (2, 2)])]
+        lsoi = ia.LineStringsOnImage(ls, shape=self.image.shape)
+        return lsoi
+
+    @property
+    def bbsoi(self):
+        bbs = [ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=self.image.shape)
+        return bbsoi
 
     @property
     def heatmaps(self):
@@ -1903,6 +2924,7 @@ class TestCrop(unittest.TestCase):
                                 [0, 0, 0]])
         return [ia.SegmentationMapsOnImage(segmaps_arr, shape=self.image.shape)]
 
+    # TODO split up and add polys/LS/BBs
     def test_crop_by_fixed_int_on_each_side_on_its_own(self):
         # test crop by 1 pixel on each side
         crops = [
@@ -1928,7 +2950,7 @@ class TestCrop(unittest.TestCase):
                 observed = aug.augment_images([self.image])
                 assert array_equal_lists(observed, [base_img_cropped])
 
-                keypoints_moved = [self.kpsoi[0].shift(x=-left, y=-top)]
+                keypoints_moved = self.kpsoi.shift(x=-left, y=-top)
                 observed = aug.augment_keypoints(self.kpsoi)
                 assert keypoints_equal(observed, keypoints_moved)
 
@@ -1948,6 +2970,7 @@ class TestCrop(unittest.TestCase):
                 assert observed.shape == base_img_cropped.shape
                 assert np.array_equal(observed.get_arr(), segmaps_arr_cropped)
 
+    # TODO split up and add polys/LS/BBs
     def test_crop_by_tuple_of_ints_on_each_side_on_its_own(self):
         def _to_range_tuple(val):
             return val if isinstance(val, tuple) else (val, val)
@@ -1988,7 +3011,7 @@ class TestCrop(unittest.TestCase):
                                                :]
                                 )
                                 keypoints_cropped.append(
-                                    self.kpsoi[0].shift(
+                                    self.kpsoi.shift(
                                         x=-left_val, y=-top_val)
                                 )
 
@@ -2024,13 +3047,14 @@ class TestCrop(unittest.TestCase):
                                 in images_cropped])
 
                     observed = aug.augment_keypoints(self.kpsoi)
-                    assert any([keypoints_equal(observed, [kp])
+                    assert any([keypoints_equal(observed, kp)
                                 for kp
                                 in keypoints_cropped])
 
                 assert len(set(movements)) == 3
                 assert len(set(movements_det)) == 1
 
+    # TODO split up and add polys/LS/BBs
     def test_crop_by_list_of_ints_on_each_side_on_its_own(self):
         # test crop by list of exact pixel values
         crops = [
@@ -2064,7 +3088,7 @@ class TestCrop(unittest.TestCase):
                                                :]
                                 )
                                 keypoints_cropped.append(
-                                    self.kpsoi[0].shift(
+                                    self.kpsoi.shift(
                                         x=-left_val, y=-top_val)
                                 )
 
@@ -2098,7 +3122,7 @@ class TestCrop(unittest.TestCase):
                                 in images_cropped])
 
                     observed = aug.augment_keypoints(self.kpsoi)
-                    assert any([keypoints_equal(observed, [kp])
+                    assert any([keypoints_equal(observed, kp)
                                 for kp
                                 in keypoints_cropped])
 
@@ -2226,44 +3250,128 @@ class TestCrop(unittest.TestCase):
         aug = iaa.Crop((1, 0, 4, 4), keep_size=False)
         polygons = [ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
                     ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])]
-        psoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
+        cbaoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
 
-        psoi_aug = aug.augment_polygons([psoi, psoi])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
 
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (5, 6, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(0-4, 0-1), (4-4, 0-1), (4-4, 4-1), (0-4, 4-1)])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (5, 6, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(0-4, 0-1), (4-4, 0-1), (4-4, 4-1), (0-4, 4-1)]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(1-4, 1-1), (5-4, 1-1), (5-4, 5-1), (1-4, 5-1)])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(1-4, 1-1), (5-4, 1-1), (5-4, 5-1), (1-4, 5-1)]
             )
 
     def test_crop_polygons_by_fixed_ints_with_keep_size(self):
         aug = iaa.Crop((1, 0, 4, 4), keep_size=True)
         polygons = [ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
                     ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])]
-        psoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
+        cbaoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
 
-        psoi_aug = aug.augment_polygons([psoi, psoi])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
 
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (10, 10, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(10*(-4/6), 10*(-1/5)),
-                            (10*(0/6), 10*(-1/5)),
-                            (10*(0/6), 10*(3/5)),
-                            (10*(-4/6), 10*(3/5))])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 10, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(10*(-4/6), 10*(-1/5)),
+                 (10*(0/6), 10*(-1/5)),
+                 (10*(0/6), 10*(3/5)),
+                 (10*(-4/6), 10*(3/5))]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(10*(-3/6), 10*(0/5)),
-                            (10*(1/6), 10*(0/5)),
-                            (10*(1/6), 10*(4/5)),
-                            (10*(-3/6), 10*(4/5))])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(10*(-3/6), 10*(0/5)),
+                 (10*(1/6), 10*(0/5)),
+                 (10*(1/6), 10*(4/5)),
+                 (10*(-3/6), 10*(4/5))]
+            )
+
+    def test_crop_line_strings_by_fixed_ints_without_keep_size(self):
+        aug = iaa.Crop((1, 0, 4, 4), keep_size=False)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(10, 10, 3))
+
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (5, 6, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(0-4, 0-1), (4-4, 0-1), (4-4, 4-1), (0-4, 4-1)]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(1-4, 1-1), (5-4, 1-1), (5-4, 5-1), (1-4, 5-1)]
+            )
+
+    def test_crop_line_strings_by_fixed_ints_with_keep_size(self):
+        aug = iaa.Crop((1, 0, 4, 4), keep_size=True)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(10, 10, 3))
+
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 10, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(10*(-4/6), 10*(-1/5)),
+                 (10*(0/6), 10*(-1/5)),
+                 (10*(0/6), 10*(3/5)),
+                 (10*(-4/6), 10*(3/5))]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(10*(-3/6), 10*(0/5)),
+                 (10*(1/6), 10*(0/5)),
+                 (10*(1/6), 10*(4/5)),
+                 (10*(-3/6), 10*(4/5))]
+            )
+
+    def test_crop_bounding_boxes_by_fixed_ints_without_keep_size(self):
+        aug = iaa.Crop((1, 0, 4, 4), keep_size=False)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=10, y2=10),
+               ia.BoundingBox(x1=1, y1=2, x2=9, y2=10)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(10, 10, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (5, 6, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(0-4, 0-1), (10-4, 10-1)]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(1-4, 2-1), (9-4, 10-1)]
+            )
+
+    def test_crop_bounding_boxes_by_fixed_ints_with_keep_size(self):
+        aug = iaa.Crop((1, 0, 4, 4), keep_size=True)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=10, y2=10),
+               ia.BoundingBox(x1=1, y1=2, x2=9, y2=10)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(10, 10, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (10, 10, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(10*(-4/6), 10*(-1/5)),
+                 (10*(6/6), 10*(9/5))]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(10*(-3/6), 10*(1/5)),
+                 (10*(5/6), 10*(9/5))]
             )
 
     def test_crop_by_one_fixed_float_without_keep_size(self):
@@ -2327,11 +3435,9 @@ class TestCrop(unittest.TestCase):
                 observed = aug.augment_image(image)
                 assert np.array_equal(observed, image_cropped)
 
-    def test_crop_keypoints_by_fixed_float_on_each_side_on_its_own(self):
-        height, width = (50, 50)
-        kps = [ia.Keypoint(x=10, y=11), ia.Keypoint(x=20, y=21),
-               ia.Keypoint(x=30, y=31)]
-        keypoints = [ia.KeypointsOnImage(kps, shape=(height, width))]
+    def _test_crop_cba_by_fixed_float_on_each_side_on_its_own(
+            self, augf_name, cbaoi):
+        height, width = cbaoi.shape[0:2]
         crops = [
             (0.1, 0, 0, 0),
             (0, 0.1, 0, 0),
@@ -2339,16 +3445,56 @@ class TestCrop(unittest.TestCase):
             (0, 0, 0, 0.1),
         ]
         for crop in crops:
-            with self.subTest(percent=crop):
+            with self.subTest(augf_name=augf_name, percent=crop):
                 aug = iaa.Crop(percent=crop, keep_size=False)
 
                 top, right, bottom, left = crop
                 top_px = int(round(top * height))
+                right_px = int(round(right * width))
                 left_px = int(round(left * width))
+                bottom_px = int(round(bottom * height))
 
-                keypoints_moved = [keypoints[0].shift(x=-left_px, y=-top_px)]
-                observed = aug.augment_keypoints(keypoints)
-                assert keypoints_equal(observed, keypoints_moved)
+                observed = getattr(aug, augf_name)(cbaoi)
+
+                expected = shift_cbaoi(cbaoi, left=-left_px, top=-top_px)
+                expected.shape = tuple(
+                    [expected.shape[0] - top_px - bottom_px,
+                     expected.shape[1] - left_px - right_px]
+                    + list(expected.shape[2:])
+                )
+                assert_cbaois_equal(observed, expected)
+
+    def test_crop_keypoints_by_fixed_float_on_each_side_on_its_own(self):
+        height, width = (50, 50)
+        kps = [ia.Keypoint(x=10, y=11), ia.Keypoint(x=20, y=21),
+               ia.Keypoint(x=30, y=31)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(height, width))
+        self._test_crop_cba_by_fixed_float_on_each_side_on_its_own(
+            "augment_keypoints", kpsoi)
+
+    def test_crop_polygons_by_fixed_float_on_each_side_on_its_own(self):
+        height, width = (50, 50)
+        polygons = [ia.Polygon([(0, 0), (40, 0), (40, 40), (0, 40)]),
+                    ia.Polygon([(10, 10), (50, 10), (50, 50), (10, 50)])]
+        psoi = ia.PolygonsOnImage(polygons, shape=(height, width, 3))
+        self._test_crop_cba_by_fixed_float_on_each_side_on_its_own(
+            "augment_polygons", psoi)
+
+    def test_crop_line_strings_by_fixed_float_on_each_side_on_its_own(self):
+        height, width = (50, 50)
+        lss = [ia.LineString([(0, 0), (40, 0), (40, 40), (0, 40)]),
+               ia.LineString([(10, 10), (50, 10), (50, 50), (10, 50)])]
+        lsoi = ia.LineStringsOnImage(lss, shape=(height, width, 3))
+        self._test_crop_cba_by_fixed_float_on_each_side_on_its_own(
+            "augment_line_strings", lsoi)
+
+    def test_crop_bounding_boxes_by_fixed_float_on_each_side_on_its_own(self):
+        height, width = (50, 50)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=40, y2=40),
+               ia.BoundingBox(x1=10, y1=10, x2=30, y2=40)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(height, width, 3))
+        self._test_crop_cba_by_fixed_float_on_each_side_on_its_own(
+            "augment_bounding_boxes", bbsoi)
 
     def test_crop_heatmaps_smaller_than_img_by_fixed_floats_without_ks(self):
         # crop smaller heatmaps
@@ -2470,44 +3616,128 @@ class TestCrop(unittest.TestCase):
         aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=False)
         polygons = [ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
                     ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])]
-        psoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
+        cbaoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
 
-        psoi_aug = aug.augment_polygons([psoi, psoi])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
 
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (3, 9, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(0-1, 0-2), (4-1, 0-2), (4-1, 4-2), (0-1, 4-2)])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (3, 9, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(0-1, 0-2), (4-1, 0-2), (4-1, 4-2), (0-1, 4-2)]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(1-1, 1-2), (5-1, 1-2), (5-1, 5-2), (1-1, 5-2)])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(1-1, 1-2), (5-1, 1-2), (5-1, 5-2), (1-1, 5-2)]
             )
 
     def test_crop_polygons_by_fixed_floats_with_keep_size(self):
         aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=True)
         polygons = [ia.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
                     ia.Polygon([(1, 1), (5, 1), (5, 5), (1, 5)])]
-        psoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
+        cbaoi = ia.PolygonsOnImage(polygons, shape=(10, 10, 3))
 
-        psoi_aug = aug.augment_polygons([psoi, psoi])
+        cbaoi_aug = aug.augment_polygons([cbaoi, cbaoi])
 
-        assert len(psoi_aug) == 2
-        for psoi_aug_i in psoi_aug:
-            assert psoi_aug_i.shape == (10, 10, 3)
-            assert len(psoi_aug_i.polygons) == 2
-            assert psoi_aug_i.polygons[0].exterior_almost_equals(
-                ia.Polygon([(10*(-1/9), 10*(-2/3)),
-                            (10*(3/9), 10*(-2/3)),
-                            (10*(3/9), 10*(2/3)),
-                            (10*(-1/9), 10*(2/3))])
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 10, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(10*(-1/9), 10*(-2/3)),
+                 (10*(3/9), 10*(-2/3)),
+                 (10*(3/9), 10*(2/3)),
+                 (10*(-1/9), 10*(2/3))]
             )
-            assert psoi_aug_i.polygons[1].exterior_almost_equals(
-                ia.Polygon([(10*(0/9), 10*(-1/3)),
-                            (10*(4/9), 10*(-1/3)),
-                            (10*(4/9), 10*(3/3)),
-                            (10*(0/9), 10*(3/3))])
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(10*(0/9), 10*(-1/3)),
+                 (10*(4/9), 10*(-1/3)),
+                 (10*(4/9), 10*(3/3)),
+                 (10*(0/9), 10*(3/3))]
+            )
+
+    def test_crop_line_strings_by_fixed_floats_without_keep_size(self):
+        aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=False)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(10, 10, 3))
+
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (3, 9, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(0-1, 0-2), (4-1, 0-2), (4-1, 4-2), (0-1, 4-2)]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(1-1, 1-2), (5-1, 1-2), (5-1, 5-2), (1-1, 5-2)]
+            )
+
+    def test_crop_line_strings_by_fixed_floats_with_keep_size(self):
+        aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=True)
+        lss = [ia.LineString([(0, 0), (4, 0), (4, 4), (0, 4)]),
+               ia.LineString([(1, 1), (5, 1), (5, 5), (1, 5)])]
+        cbaoi = ia.LineStringsOnImage(lss, shape=(10, 10, 3))
+
+        cbaoi_aug = aug.augment_line_strings([cbaoi, cbaoi])
+
+        assert len(cbaoi_aug) == 2
+        for cbaoi_aug_i in cbaoi_aug:
+            assert cbaoi_aug_i.shape == (10, 10, 3)
+            assert len(cbaoi_aug_i.items) == 2
+            assert cbaoi_aug_i.items[0].coords_almost_equals(
+                [(10*(-1/9), 10*(-2/3)),
+                 (10*(3/9), 10*(-2/3)),
+                 (10*(3/9), 10*(2/3)),
+                 (10*(-1/9), 10*(2/3))]
+            )
+            assert cbaoi_aug_i.items[1].coords_almost_equals(
+                [(10*(0/9), 10*(-1/3)),
+                 (10*(4/9), 10*(-1/3)),
+                 (10*(4/9), 10*(3/3)),
+                 (10*(0/9), 10*(3/3))]
+            )
+
+    def test_crop_bounding_boxes_by_fixed_floats_without_keep_size(self):
+        aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=False)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=2, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(10, 10, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (3, 9, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(0-1, 0-2), (4-1, 4-2)]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(1-1, 2-2), (3-1, 4-2)]
+            )
+
+    def test_crop_bounding_boxes_by_fixed_floats_with_keep_size(self):
+        aug = iaa.Crop(percent=(0.2, 0, 0.5, 0.1), keep_size=True)
+        bbs = [ia.BoundingBox(x1=0, y1=0, x2=4, y2=4),
+               ia.BoundingBox(x1=1, y1=2, x2=3, y2=4)]
+        bbsoi = ia.BoundingBoxesOnImage(bbs, shape=(10, 10, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes([bbsoi, bbsoi])
+
+        assert len(bbsoi_aug) == 2
+        for bbsoi_aug_i in bbsoi_aug:
+            assert bbsoi_aug_i.shape == (10, 10, 3)
+            assert len(bbsoi_aug_i.bounding_boxes) == 2
+            assert bbsoi_aug_i.bounding_boxes[0].coords_almost_equals(
+                [(10*((0-1)/9), 10*((0-2)/3)),
+                 (10*((4-1)/9), 10*((4-2)/3))]
+            )
+            assert bbsoi_aug_i.bounding_boxes[1].coords_almost_equals(
+                [(10*((1-1)/9), 10*((2-2)/3)),
+                 (10*((3-1)/9), 10*((4-2)/3))]
             )
 
     def test_crop_by_tuple_of_floats_on_top_side_without_ks(self):
@@ -2562,6 +3792,34 @@ class TestCrop(unittest.TestCase):
         assert seen[2] == 0
         assert seen[3] == 0
         assert 250 - 50 < seen[4] < 250 + 50
+
+    @classmethod
+    def _test_crop_empty_cba(cls, augf_name, cbaoi):
+        aug = iaa.Crop(px=(1, 2, 3, 4), keep_size=False)
+
+        cbaoi_aug = getattr(aug, augf_name)(cbaoi)
+
+        expected = cbaoi.deepcopy()
+        expected.shape = tuple(
+            [expected.shape[0]-1-3, expected.shape[1]-2-4]
+            + list(expected.shape[2:]))
+        assert_cbaois_equal(cbaoi_aug, expected)
+
+    def test_pad_empty_keypoints(self):
+        cbaoi = ia.KeypointsOnImage([], shape=(12, 14, 3))
+        self._test_crop_empty_cba("augment_keypoints", cbaoi)
+
+    def test_pad_empty_polygons(self):
+        cbaoi = ia.PolygonsOnImage([], shape=(12, 14, 3))
+        self._test_crop_empty_cba("augment_polygons", cbaoi)
+
+    def test_pad_empty_line_strings(self):
+        cbaoi = ia.LineStringsOnImage([], shape=(12, 14, 3))
+        self._test_crop_empty_cba("augment_line_strings", cbaoi)
+
+    def test_pad_empty_bounding_boxes(self):
+        cbaoi = ia.BoundingBoxesOnImage([], shape=(12, 14, 3))
+        self._test_crop_empty_cba("augment_bounding_boxes", cbaoi)
 
     def test_zero_sized_axes_no_keep_size(self):
         # we also use height/width 2 here, because a height/width of 1 is
@@ -2719,6 +3977,10 @@ class TestCrop(unittest.TestCase):
                     assert np.all(_isclose(image_aug[mask],
                                            np.float128(value)))
 
+    def test_pickleable(self):
+        aug = iaa.Crop((0, 10), random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(30, 30, 1))
+
 
 class TestPadToFixedSize(unittest.TestCase):
     def setUp(self):
@@ -2808,6 +4070,24 @@ class TestPadToFixedSize(unittest.TestCase):
         assert observed.shape == (6, 6, 3)
         assert np.array_equal(observed, img6x6)
 
+    def test_too_small_image_with_width_none(self):
+        aug = iaa.PadToFixedSize(height=5, width=None)
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        observed = aug.augment_image(image)
+
+        assert observed.dtype.name == "uint8"
+        assert observed.shape == (5, 4, 3)
+
+    def test_too_small_image_with_height_none(self):
+        aug = iaa.PadToFixedSize(height=None, width=5)
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        observed = aug.augment_image(image)
+
+        assert observed.dtype.name == "uint8"
+        assert observed.shape == (4, 5, 3)
+
     def test_image_pad_mode(self):
         # make sure that pad mode is recognized
         aug = iaa.PadToFixedSize(height=4, width=4, pad_mode="edge")
@@ -2885,22 +4165,31 @@ class TestPadToFixedSize(unittest.TestCase):
             height=3, width=3, pad_mode="edge", position="center")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_pad_at_center(self):
         aug = iaa.PadToFixedSize(
             height=4, width=4, pad_mode="edge", position="center")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
-        expected = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(4, 4))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        # padding happens at right/bottom, so KP doesn't move
+        expected = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_keypoints_pad_at_center__2px(self):
+        aug = iaa.PadToFixedSize(
+            height=5, width=5, pad_mode="edge", position="center")
+        kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
+
+        observed = aug.augment_keypoints(kpsoi)
+
+        expected = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(5, 5))
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_pad_at_left_top(self):
         # keypoint test with explicit non-center position
@@ -2908,22 +4197,277 @@ class TestPadToFixedSize(unittest.TestCase):
             height=4, width=4, pad_mode="edge", position="left-top")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(4, 4))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_pad_at_right_bottom(self):
         aug = iaa.PadToFixedSize(
             height=4, width=4, pad_mode="edge", position="right-bottom")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(4, 4))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
+
+    def test_keypoints_empty(self):
+        aug = iaa.PadToFixedSize(height=5, width=6)
+        kpsoi = ia.KeypointsOnImage([], shape=(3, 3))
+
+        observed = aug.augment_keypoints(kpsoi)
+
+        expected = ia.KeypointsOnImage([], shape=(5, 6))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons__image_already_fullfills_min_shape(self):
+        # polygons test with shape not being changed
+        aug = iaa.PadToFixedSize(
+            height=3, width=3, pad_mode="edge", position="center")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_pad_at_center(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="center")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        # padding happens at right/bottom, so poly doesn't move
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_pad_at_center__2px(self):
+        aug = iaa.PadToFixedSize(
+            height=5, width=5, pad_mode="edge", position="center")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        # padding happens at right/bottom, so poly doesn't move
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(0+1, 0+1), (3+1, 0+1), (3+1, 3+1)])
+        ], shape=(5, 5))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_pad_at_left_top(self):
+        # polygon test with explicit non-center position
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="left-top")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(1+0, 1+0), (1+3, 1+0), (1+3, 1+3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_pad_at_right_bottom(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="right-bottom")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_empty(self):
+        aug = iaa.PadToFixedSize(height=5, width=6)
+        psoi = ia.PolygonsOnImage([], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([], shape=(5, 6))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings__image_already_fullfills_min_shape(self):
+        # line string test with shape not being changed
+        aug = iaa.PadToFixedSize(
+            height=3, width=3, pad_mode="edge", position="center")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_pad_at_center(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="center")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        # padding happens at right/bottom, so LS doesn't move
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_pad_at_center__2px(self):
+        aug = iaa.PadToFixedSize(
+            height=5, width=5, pad_mode="edge", position="center")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(0+1, 0+1), (3+1, 0+1), (3+1, 3+1)])
+        ], shape=(5, 5))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_pad_at_left_top(self):
+        # line string test with explicit non-center position
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="left-top")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(1+0, 1+0), (1+3, 1+0), (1+3, 1+3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_pad_at_right_bottom(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="right-bottom")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_empty(self):
+        aug = iaa.PadToFixedSize(height=5, width=6)
+        cbaoi = ia.LineStringsOnImage([], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([], shape=(5, 6))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes__image_already_fullfills_min_shape(self):
+        # bounding boxes test with shape not being changed
+        aug = iaa.PadToFixedSize(
+            height=3, width=3, pad_mode="edge", position="center")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_pad_at_center(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="center")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        # aug adds a columns at the right and row at the bottom,
+        # i.e. BB is not affected
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_pad_at_center__2px(self):
+        aug = iaa.PadToFixedSize(
+            height=5, width=5, pad_mode="edge", position="center")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0+1, y1=1+1, x2=2+1, y2=3+1),
+        ], shape=(5, 5))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_pad_at_left_top(self):
+        # bounding boxes test with explicit non-center position
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="left-top")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0+1, y1=1+1, x2=2+1, y2=3+1),
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_pad_at_right_bottom(self):
+        aug = iaa.PadToFixedSize(
+            height=4, width=4, pad_mode="edge", position="right-bottom")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3),
+        ], shape=(4, 4))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_empty(self):
+        aug = iaa.PadToFixedSize(height=5, width=6)
+        bbsoi = ia.BoundingBoxesOnImage([], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([], shape=(5, 6))
+        assert_cbaois_equal(observed, expected)
 
     def test_heatmaps__pad_mode_should_be_ignored(self):
         # basic heatmaps test
@@ -2994,6 +4538,17 @@ class TestPadToFixedSize(unittest.TestCase):
         expected[0, :, 0] = 0
         assert observed.shape == (32, 32, 3)
         assert np.array_equal(observed.arr, expected)
+
+    def test_get_parameters(self):
+        aug = iaa.PadToFixedSize(width=20, height=10, pad_mode="edge",
+                                 pad_cval=10, position="center")
+        params = aug.get_parameters()
+        assert params[0] == 20
+        assert params[1] == 10
+        assert params[2].value == "edge"
+        assert params[3].value == 10
+        assert np.isclose(params[4][0].value, 0.5)
+        assert np.isclose(params[4][1].value, 0.5)
 
     def test_zero_sized_axes(self):
         shapes = [
@@ -3100,6 +4655,25 @@ class TestPadToFixedSize(unittest.TestCase):
                     assert np.all(_isclose(image_aug[~mask], 0))
                     assert np.all(_isclose(image_aug[mask],
                                            np.float128(value)))
+
+    def test_pickleable(self):
+        aug = iaa.PadToFixedSize(20, 20, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(10, 10, 1))
+
+
+class TestCenterPadToFixedSize(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_image2d(self):
+        for _ in np.arange(10):
+            image = np.arange(4*4*3).astype(np.uint8).reshape((4, 4, 3))
+            aug = iaa.CenterPadToFixedSize(height=5, width=5)
+
+            observed = aug(image=image)
+
+            expected = iaa.pad(image, right=1, bottom=1)
+            assert np.array_equal(observed, expected)
 
 
 class TestCropToFixedSize(unittest.TestCase):
@@ -3208,6 +4782,24 @@ class TestCropToFixedSize(unittest.TestCase):
         assert observed.shape == (4, 4, 3)
         assert np.array_equal(observed, img4x4)
 
+    def test_too_large_image_with_width_none(self):
+        aug = iaa.CropToFixedSize(height=5, width=None)
+        image = np.zeros((6, 6, 3), dtype=np.uint8)
+
+        observed = aug.augment_image(image)
+
+        assert observed.dtype.name == "uint8"
+        assert observed.shape == (5, 6, 3)
+
+    def test_too_large_image_with_height_none(self):
+        aug = iaa.CropToFixedSize(height=None, width=5)
+        image = np.zeros((6, 6, 3), dtype=np.uint8)
+
+        observed = aug.augment_image(image)
+
+        assert observed.dtype.name == "uint8"
+        assert observed.shape == (6, 5, 3)
+
     def test_image_crop_at_left_top(self):
         # explicit non-center position test
         aug = iaa.CropToFixedSize(height=3, width=3, position="left-top")
@@ -3247,43 +4839,240 @@ class TestCropToFixedSize(unittest.TestCase):
         aug = iaa.CropToFixedSize(height=3, width=3, position="center")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_crop_at_center(self):
         # basic keypoint test
         aug = iaa.CropToFixedSize(height=1, width=1, position="center")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=1, y=1)], shape=(3, 3))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=0, y=0)], shape=(1, 1))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_crop_at_left_top(self):
         # keypoint test with explicit non-center position
         aug = iaa.CropToFixedSize(height=3, width=3, position="left-top")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(5, 5))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=0, y=0)], shape=(3, 3))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
 
     def test_keypoints_crop_at_right_bottom(self):
         aug = iaa.CropToFixedSize(height=3, width=3, position="right-bottom")
         kpsoi = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(5, 5))
 
-        observed = aug.augment_keypoints([kpsoi])
+        observed = aug.augment_keypoints(kpsoi)
 
         expected = ia.KeypointsOnImage([ia.Keypoint(x=2, y=2)], shape=(3, 3))
-        assert observed[0].shape == expected.shape
-        assert keypoints_equal(observed, [expected])
+        assert_cbaois_equal(observed, expected)
+
+    def test_keypoints_empty(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        kpsoi = ia.KeypointsOnImage([], shape=(5, 4))
+
+        observed = aug.augment_keypoints(kpsoi)
+
+        expected = ia.KeypointsOnImage([], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons__image_already_fullfills_max_shape(self):
+        # polygons test with shape not being changed
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_crop_at_center(self):
+        # basic polygons test
+        aug = iaa.CropToFixedSize(height=1, width=1, position="center")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(1-1, 1-1), (3-1, 1-1), (3-1, 3-1)])
+        ], shape=(1, 1))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_crop_at_left_top(self):
+        # polygons test with explicit non-center position
+        aug = iaa.CropToFixedSize(height=3, width=3, position="left-top")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(5, 5))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(1-2, 1-2), (3-2, 1-2), (3-2, 3-2)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_crop_at_right_bottom(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="right-bottom")
+        psoi = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(5, 5))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([
+            ia.Polygon([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_polygons_empty(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        psoi = ia.PolygonsOnImage([], shape=(5, 4))
+
+        observed = aug.augment_polygons(psoi)
+
+        expected = ia.PolygonsOnImage([], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings__image_already_fullfills_max_shape(self):
+        # line strings test with shape not being changed
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_crop_at_center(self):
+        # basic line strings test
+        aug = iaa.CropToFixedSize(height=1, width=1, position="center")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(1-1, 1-1), (3-1, 1-1), (3-1, 3-1)])
+        ], shape=(1, 1))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_crop_at_left_top(self):
+        # polygons test with explicit non-center position
+        aug = iaa.CropToFixedSize(height=3, width=3, position="left-top")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(5, 5))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(1-2, 1-2), (3-2, 1-2), (3-2, 3-2)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_crop_at_right_bottom(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="right-bottom")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(5, 5))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([
+            ia.LineString([(1, 1), (3, 1), (3, 3)])
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_line_strings_empty(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        cbaoi = ia.LineStringsOnImage([], shape=(5, 4))
+
+        observed = aug.augment_line_strings(cbaoi)
+
+        expected = ia.LineStringsOnImage([], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes__image_already_fullfills_max_shape(self):
+        # bounding boxes test with shape not being changed
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_crop_at_center(self):
+        # basic bounding boxes test
+        aug = iaa.CropToFixedSize(height=1, width=1, position="center")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(3, 3))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0-1, y1=1-1, x2=2-1, y2=3-1)
+        ], shape=(1, 1))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_crop_at_left_top(self):
+        # bounding boxes test with explicit non-center position
+        aug = iaa.CropToFixedSize(height=3, width=3, position="left-top")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(5, 5))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0-2, y1=1-2, x2=2-2, y2=3-2)
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_crop_at_right_bottom(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="right-bottom")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(5, 5))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=2, y2=3)
+        ], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
+
+    def test_bounding_boxes_empty(self):
+        aug = iaa.CropToFixedSize(height=3, width=3, position="center")
+        bbsoi = ia.BoundingBoxesOnImage([], shape=(5, 4))
+
+        observed = aug.augment_bounding_boxes(bbsoi)
+
+        expected = ia.BoundingBoxesOnImage([], shape=(3, 3))
+        assert_cbaois_equal(observed, expected)
 
     def test_heatmaps(self):
         # basic heatmaps test
@@ -3382,6 +5171,14 @@ class TestCropToFixedSize(unittest.TestCase):
         expected = np.ones((16, 16, 1), dtype=np.int32)
         assert observed.shape == (32, 32, 3)
         assert np.array_equal(observed.arr, expected)
+
+    def test_get_parameters(self):
+        aug = iaa.CropToFixedSize(width=20, height=10, position="center")
+        params = aug.get_parameters()
+        assert params[0] == 20
+        assert params[1] == 10
+        assert np.isclose(params[2][0].value, 0.5)
+        assert np.isclose(params[2][1].value, 0.5)
 
     def test_zero_sized_axes(self):
         shapes = [
@@ -3494,6 +5291,1194 @@ class TestCropToFixedSize(unittest.TestCase):
                     assert np.all(_isclose(image_aug[~mask], 0))
                     assert np.all(_isclose(image_aug[mask],
                                            np.float128(value)))
+
+    def test_pickleable(self):
+        aug = iaa.CropToFixedSize(10, 10, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(20, 20, 1))
+
+
+class TestCenterCropToFixedSize(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_single_image(self):
+        for _ in np.arange(10):
+            image = np.arange(11*11*2).astype(np.uint8).reshape((11, 11, 2))
+            aug = iaa.CenterCropToFixedSize(width=3, height=3)
+
+            observed = aug(image=image)
+
+            assert np.array_equal(observed, image[5-1:5+2, 5-1:5+2, :])
+
+
+class TestCropToMultiplesOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.CropToMultiplesOf(width_multiple=1, height_multiple=2,
+                                    position="center")
+        assert aug.width_multiple == 1
+        assert aug.height_multiple == 2
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_multiples_are_1(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(1, 1, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__no_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(3, 3, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__with_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:2, :])
+
+    def test_on_3x3_image__only_width_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=3, width_multiple=2,
+                                    position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:3, 0:2, :])
+
+    def test_on_3x3_image__only_height_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=2, width_multiple=3,
+                                    position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:3, :])
+
+    def test_on_3x4_image(self):
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.CropToMultiplesOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:4, :])
+
+    def test_on_7x9_image(self):
+        image = np.arange((7*9*3)).astype(np.uint8).reshape((7, 9, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=5, width_multiple=6,
+                                    position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[1:6, 1:7, :])
+
+    def test_width_multiple_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=2, width_multiple=None,
+                                    position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:3, :])
+
+    def test_height_multiple_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=None, width_multiple=2,
+                                    position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:3, 0:2, :])
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in CropToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 50*50).astype(np.float32).reshape((50, 50, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(99, 99, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=50, width_multiple=50,
+                                    position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        assert observed.shape == (50, 50, 3)
+        assert np.allclose(observed.arr_0to1,
+                           heatmap.arr_0to1[12:-13, 12:-13, :])
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(8, 4, 3))
+        aug = iaa.CropToMultiplesOf(height_multiple=5, width_multiple=2,
+                                    position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2
+        assert observed.keypoints[0].y == 2
+
+    def test_get_parameters(self):
+        aug = iaa.CropToMultiplesOf(width_multiple=1, height_multiple=2,
+                                    position="center")
+
+        params = aug.get_parameters()
+
+        assert params[0] == 1
+        assert params[1] == 2
+        assert np.isclose(params[2][0].value, 0.5)
+        assert np.isclose(params[2][1].value, 0.5)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.CropToMultiplesOf(2, 2)
+
+                image_aug = aug(image=image)
+
+                assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.CropToMultiplesOf(5, 5, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(14, 14, 1))
+
+
+class TestCenterCropToMultiplesOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_3x4_image(self):
+        for _ in np.arange(10):
+            image = np.mod(np.arange((17*14*3)), 255)
+            image = image.astype(np.uint8).reshape((17, 14, 3))
+            aug = iaa.CenterCropToMultiplesOf(height_multiple=5,
+                                              width_multiple=5)
+
+            observed = aug(image=image)
+
+            assert np.array_equal(observed, image[1:-1, 2:-2, :])
+
+
+class TestPadToMultiplesOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.PadToMultiplesOf(width_multiple=1, height_multiple=2,
+                                   position="center")
+        assert aug.width_multiple == 1
+        assert aug.height_multiple == 2
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_multiples_are_1(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(1, 1, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__no_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(3, 3, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__with_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x3_image__only_width_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=3, width_multiple=2,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x3_image__only_height_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=2, width_multiple=3,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x4_image(self):
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.PadToMultiplesOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x9_image(self):
+        image = np.arange((7*9*3)).astype(np.uint8).reshape((7, 9, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=5, width_multiple=6,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=2, left=1, right=2)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x9_image__cval(self):
+        image = np.arange((7*9*3)).astype(np.uint8).reshape((7, 9, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=5, width_multiple=6,
+                                   pad_cval=100,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=2, left=1, right=2, cval=100)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x9_image__mode(self):
+        image = np.arange((7*9*3)).astype(np.uint8).reshape((7, 9, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=5, width_multiple=6,
+                                   pad_mode="edge",
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=2, left=1, right=2, mode="edge")
+        assert np.array_equal(observed, expected)
+
+    def test_width_multiple_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=2, width_multiple=None,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_height_multiple_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=None, width_multiple=2,
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in PadToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 51*51).astype(np.float32).reshape((51, 51, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(101, 101, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=100, width_multiple=100,
+                                   position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        expected = heatmap.pad(top=25, bottom=25, left=25, right=25)
+        assert observed.shape == (200, 200, 3)
+        assert np.allclose(observed.arr_0to1, expected.arr_0to1)
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(8, 4, 3))
+        aug = iaa.PadToMultiplesOf(height_multiple=5, width_multiple=2,
+                                   position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2
+        assert observed.keypoints[0].y == 4
+
+    def test_get_parameters(self):
+        aug = iaa.PadToMultiplesOf(width_multiple=1, height_multiple=2,
+                                   pad_cval=5, pad_mode="edge",
+                                   position="center")
+
+        params = aug.get_parameters()
+
+        assert params[0] == 1
+        assert params[1] == 2
+        assert params[2].value == "edge"
+        assert params[3].value == 5
+        assert np.isclose(params[4][0].value, 0.5)
+        assert np.isclose(params[4][1].value, 0.5)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.PadToMultiplesOf(2, 2)
+
+                image_aug = aug(image=image)
+
+                expected_height = 2
+                expected_width = 2
+                expected_shape = tuple([expected_height, expected_width]
+                                       + list(shape[2:]))
+                assert image_aug.shape == expected_shape
+
+    def test_pickleable(self):
+        aug = iaa.PadToMultiplesOf(5, 5, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(11, 11, 1))
+
+
+class TestCenterPadToMultiplesOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_3x4_image(self):
+        for _ in np.arange(10):
+            image = np.arange((3*6*3)).astype(np.uint8).reshape((3, 6, 3))
+            aug = iaa.CenterPadToMultiplesOf(5, 5)
+
+            observed = aug(image=image)
+
+            expected = iaa.pad(image, top=1, right=2, bottom=1, left=2)
+            assert np.array_equal(observed, expected)
+
+
+class TestCropToPowersOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.CropToPowersOf(width_base=2, height_base=3,
+                                 position="center")
+        assert aug.width_base == 2
+        assert aug.height_base == 3
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_on_3x3_image__no_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(3, 3, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__with_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:2, :])
+
+    def test_on_3x3_image__only_width_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(height_base=3, width_base=2,
+                                 position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:3, 0:2, :])
+
+    def test_on_3x3_image__only_height_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(height_base=2, width_base=3,
+                                 position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:3, :])
+
+    def test_on_3x4_image(self):
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.CropToPowersOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:4, :])
+
+    def test_on_17x26_image(self):
+        image = np.mod(
+            np.arange((17*26*3)),
+            255
+        ).astype(np.uint8).reshape((17, 26, 3))
+        aug = iaa.CropToPowersOf(height_base=2, width_base=3,
+                                 position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:16, 8:17, :])
+
+    def test_does_not_crop_towards_exponent_of_zero(self):
+        # Test for: axis_size < B,
+        # this should not lead to crops that result in exponent of B^0=1,
+        # i.e. the respective axes should simply not be changed.
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.CropToPowersOf(10, 10, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_width_base_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(height_base=2, width_base=None,
+                                 position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:2, 0:3, :])
+
+    def test_height_base_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.CropToPowersOf(height_base=None, width_base=2,
+                                 position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:3, 0:2, :])
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in CropToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 50*50).astype(np.float32).reshape((50, 50, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(99, 99, 3))
+        aug = iaa.CropToPowersOf(height_base=50, width_base=50,
+                                 position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        assert observed.shape == (50, 50, 3)
+        assert np.allclose(observed.arr_0to1,
+                           heatmap.arr_0to1[12:-13, 12:-13, :])
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(8, 4, 3))
+        aug = iaa.CropToPowersOf(height_base=5, width_base=2,
+                                 position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2
+        assert observed.keypoints[0].y == 2
+
+    def test_get_parameters(self):
+        aug = iaa.CropToPowersOf(width_base=1, height_base=2,
+                                 position="center")
+
+        params = aug.get_parameters()
+
+        assert params[0] == 1
+        assert params[1] == 2
+        assert np.isclose(params[2][0].value, 0.5)
+        assert np.isclose(params[2][1].value, 0.5)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.CropToPowersOf(2, 2)
+
+                image_aug = aug(image=image)
+
+                assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.CropToPowersOf(2, 2, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(15, 15, 1))
+
+
+class TestCenterCropToPowersOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_3x3_image__with_change(self):
+        for _ in np.arange(10):
+            image = np.arange((11*13*3)).astype(np.uint8).reshape((11, 13, 3))
+            aug = iaa.CenterCropToPowersOf(height_base=2, width_base=3)
+
+            observed = aug(image=image)
+
+            assert np.array_equal(observed, image[1:-2, 2:-2, :])
+
+
+class TestPadToPowersOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.PadToPowersOf(width_base=2, height_base=3,
+                                position="center")
+        assert aug.width_base == 2
+        assert aug.height_base == 3
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_on_3x3_image__no_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(3, 3, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__with_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x3_image__only_width_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(height_base=3, width_base=2,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x3_image__only_height_changed(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(height_base=2, width_base=3,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x4_image(self):
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.PadToPowersOf(2, 2, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x22_image(self):
+        image = np.mod(
+            np.arange((7*22*3)),
+            255
+        ).astype(np.uint8).reshape((7, 22, 3))
+        aug = iaa.PadToPowersOf(height_base=12, width_base=2,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=2, bottom=3, left=5, right=5)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x22_image__cval(self):
+        image = np.mod(
+            np.arange((7*22*3)),
+            255
+        ).astype(np.uint8).reshape((7, 22, 3))
+        aug = iaa.PadToPowersOf(height_base=12, width_base=2,
+                                pad_cval=100,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=2, bottom=3, left=5, right=5, cval=100)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x22_image__mode(self):
+        image = np.mod(
+            np.arange((7*22*3)),
+            255
+        ).astype(np.uint8).reshape((7, 22, 3))
+        aug = iaa.PadToPowersOf(height_base=12, width_base=2,
+                                pad_mode="edge",
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=2, bottom=3, left=5, right=5, mode="edge")
+        assert np.array_equal(observed, expected)
+
+    def test_width_base_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(height_base=2, width_base=None,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, bottom=1)
+        assert np.array_equal(observed, expected)
+
+    def test_height_base_is_none(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToPowersOf(height_base=None, width_base=2,
+                                position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in PadToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 51*51).astype(np.float32).reshape((51, 51, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(101, 101, 3))
+        aug = iaa.PadToPowersOf(height_base=200, width_base=200,
+                                position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        expected = heatmap.pad(top=25, bottom=25, left=25, right=25)
+        assert observed.shape == (200, 200, 3)
+        assert np.allclose(observed.arr_0to1, expected.arr_0to1)
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(14, 4, 3))
+        aug = iaa.PadToPowersOf(height_base=4, width_base=2,
+                                position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2
+        assert observed.keypoints[0].y == 4
+
+    def test_get_parameters(self):
+        aug = iaa.PadToPowersOf(width_base=1, height_base=2,
+                                pad_cval=5, pad_mode="edge",
+                                position="center")
+
+        params = aug.get_parameters()
+
+        assert params[0] == 1
+        assert params[1] == 2
+        assert params[2].value == "edge"
+        assert params[3].value == 5
+        assert np.isclose(params[4][0].value, 0.5)
+        assert np.isclose(params[4][1].value, 0.5)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.PadToPowersOf(2, 2)
+
+                image_aug = aug(image=image)
+
+                expected_height = 2
+                expected_width = 2
+                expected_shape = tuple([expected_height, expected_width]
+                                       + list(shape[2:]))
+                assert image_aug.shape == expected_shape
+
+    def test_pickleable(self):
+        aug = iaa.PadToPowersOf(2, 2, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(9, 9, 1))
+
+
+class TestCenterPadToPowersOf(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_3x3_image__with_change(self):
+        for _ in np.arange(10):
+            image = np.arange((5*13*3)).astype(np.uint8).reshape((5, 13, 3))
+            aug = iaa.CenterPadToPowersOf(height_base=2, width_base=2)
+
+            observed = aug(image=image)
+
+            expected = iaa.pad(image, top=1, right=2, bottom=2, left=1)
+            assert np.array_equal(observed, expected)
+
+
+class TestCropToAspectRatio(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+        assert np.isclose(aug.aspect_ratio, 2.0)
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_on_4x4_image__no_change(self):
+        image = np.arange((4*4*3)).astype(np.uint8).reshape((4, 4, 3))
+        aug = iaa.CropToAspectRatio(1.0, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_4x4_image__with_change__wider(self):
+        image = np.arange((4*4*3)).astype(np.uint8).reshape((4, 4, 3))
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[1:3, 0:4, :])
+
+    def test_on_4x4_image__with_change__higher(self):
+        image = np.arange((4*4*3)).astype(np.uint8).reshape((4, 4, 3))
+        aug = iaa.CropToAspectRatio(0.5, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[0:4, 1:3, :])
+
+    def test_on_5x4_image__with_change__wider(self):
+        image = np.arange((5*4*3)).astype(np.uint8).reshape((5, 4, 3))
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[1:3, 0:4, :])
+
+    def test_on_5x4_image__with_change__higher(self):
+        image = np.arange((5*4*3)).astype(np.uint8).reshape((5, 4, 3))
+        aug = iaa.CropToAspectRatio(0.5, position="center")
+
+        observed = aug(image=image)
+
+        # Here it could either crop 1px or 2px from the width (leading to
+        # aspect ratios of 3/5=0.6 or 2/5=0.4. The underlying method rather
+        # crops one pixel too few than one too many, hence we only crop 1px
+        # here.
+        assert np.array_equal(observed, image[0:5, 0:3, :])
+
+    def test_unreachable_aspect_ratio__wider(self):
+        image = np.arange((5*4*3)).astype(np.uint8).reshape((5, 4, 3))
+        aug = iaa.CropToAspectRatio(20.0, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[2:3, 0:4, :])
+
+    def test_unreachable_aspect_ratio__higher(self):
+        image = np.arange((5*4*3)).astype(np.uint8).reshape((5, 4, 3))
+        aug = iaa.CropToAspectRatio(0.01, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[:, 1:2, :])
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in CropToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 50*50).astype(np.float32).reshape((50, 50, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(100, 100, 3))
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        assert observed.shape == (50, 100, 3)
+        assert np.allclose(observed.arr_0to1,
+                           heatmap.arr_0to1[12:-13, :, :])
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(8, 8, 3))
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2
+        assert observed.keypoints[0].y == 1
+
+    def test_get_parameters(self):
+        aug = iaa.CropToAspectRatio(2.0, position="center")
+
+        params = aug.get_parameters()
+
+        assert np.isclose(params[0], 2.0)
+        assert np.isclose(params[1][0].value, 0.5)
+        assert np.isclose(params[1][1].value, 0.5)
+
+    def test_zero_sized_axes(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            for aspect_ratio in [2.0, 1.0, 0.5]:
+                with self.subTest(shape=shape, aspect_ratio=aspect_ratio):
+                    image = np.zeros(shape, dtype=np.uint8)
+                    aug = iaa.CropToAspectRatio(aspect_ratio)
+
+                    image_aug = aug(image=image)
+
+                    assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.CropToAspectRatio(1.0, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(20, 10, 1))
+
+
+class TestCenterCropToAspectRatio(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_5x4_image__with_change__wider(self):
+        for _ in np.arange(10):
+            image = np.arange((5*4*3)).astype(np.uint8).reshape((5, 4, 3))
+            aug = iaa.CenterCropToAspectRatio(2.0)
+
+            observed = aug(image=image)
+
+            assert np.array_equal(observed, image[1:3, 0:4, :])
+
+
+class TestPadToAspectRatio(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init__(self):
+        aug = iaa.PadToAspectRatio(2.0, position="center")
+        assert np.isclose(aug.aspect_ratio, 2.0)
+        assert np.isclose(aug.position[0].value, 0.5)
+        assert np.isclose(aug.position[1].value, 0.5)
+
+    def test_on_3x3_image__no_change(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToAspectRatio(1.0, position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image)
+
+    def test_on_3x3_image__with_change__wider(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToAspectRatio(2.0, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, left=1, right=2)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x3_image__with_change__higher(self):
+        image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+        aug = iaa.PadToAspectRatio(0.5, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=2)
+        assert np.array_equal(observed, expected)
+
+    def test_on_3x4_image(self):
+        image = np.arange((3*4*3)).astype(np.uint8).reshape((3, 4, 3))
+        aug = iaa.PadToAspectRatio(2.0, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, left=1, right=1)
+        assert np.array_equal(observed, expected)
+
+    def test_on_7x22_image__height_padded_even_though_ratio_is_wide(self):
+        image = np.mod(
+            np.arange((7*22*3)),
+            255
+        ).astype(np.uint8).reshape((7, 22, 3))
+        aug = iaa.PadToAspectRatio(2.0, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=2, bottom=2)
+        assert np.array_equal(observed, expected)
+
+    def test_on_10x6_image__cval(self):
+        image = np.arange((10*6*3)).astype(np.uint8).reshape((10, 6, 3))
+        aug = iaa.PadToAspectRatio(0.5, pad_cval=100, position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=1, cval=100)
+        assert np.array_equal(observed, expected)
+
+    def test_on_10x6_image__mode(self):
+        image = np.arange((10*6*3)).astype(np.uint8).reshape((10, 6, 3))
+        aug = iaa.PadToAspectRatio(0.5,
+                                   pad_mode="edge",
+                                   position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, top=1, bottom=1, mode="edge")
+        assert np.array_equal(observed, expected)
+
+    def test_heatmaps(self):
+        # segmaps are implemented in the same way in PadToFixesSize
+        # and already tested there, so there is no need to test them again here
+        arr = np.linspace(0, 1.0, 50*50).astype(np.float32).reshape((50, 50, 1))
+        heatmap = ia.HeatmapsOnImage(arr, shape=(100, 100, 3))
+        aug = iaa.PadToAspectRatio(2.0, position="center")
+
+        observed = aug(heatmaps=heatmap)
+
+        expected = heatmap.pad(top=0, bottom=0, left=25, right=25)
+        assert observed.shape == (100, 200, 3)
+        assert np.allclose(observed.arr_0to1, expected.arr_0to1)
+
+    def test_keypoints(self):
+        kps = [ia.Keypoint(x=2, y=3)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(10, 5, 3))
+        aug = iaa.PadToAspectRatio(1.0, position="center")
+
+        observed = aug(keypoints=kpsoi)
+
+        assert observed.keypoints[0].x == 2+2
+        assert observed.keypoints[0].y == 3
+
+    def test_get_parameters(self):
+        aug = iaa.PadToAspectRatio(2.0,
+                                   pad_cval=5, pad_mode="edge",
+                                   position="center")
+
+        params = aug.get_parameters()
+
+        assert np.isclose(params[0], 2.0)
+        assert params[1].value == "edge"
+        assert params[2].value == 5
+        assert np.isclose(params[3][0].value, 0.5)
+        assert np.isclose(params[3][1].value, 0.5)
+
+    def test_zero_sized_axes__wider(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.PadToAspectRatio(2.0)
+
+                image_aug = aug(image=image)
+
+                height, width = shape[0:2]
+                if width == 0 and height == 0:
+                    h_exp, w_exp = (1, 2)
+                elif width == 0:
+                    h_exp, w_exp = (height, height * 2)
+                else:  # height == 0
+                    h_exp, w_exp = (1, 2)
+
+                expected_shape = tuple([h_exp, w_exp] + list(shape[2:]))
+                assert image_aug.shape == expected_shape
+
+    def test_zero_sized_axes__higher(self):
+        shapes = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 2),
+            (2, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (0, 2, 1),
+            (2, 0, 1)
+        ]
+
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                image = np.zeros(shape, dtype=np.uint8)
+                aug = iaa.PadToAspectRatio(0.5)
+
+                image_aug = aug(image=image)
+
+                height, width = shape[0:2]
+                if width == 0 and height == 0:
+                    h_exp, w_exp = (2, 1)
+                elif height == 0:
+                    h_exp, w_exp = (width * 2, width)
+                else:  # width == 0
+                    h_exp, w_exp = (2, 1)
+
+                expected_shape = tuple([h_exp, w_exp] + list(shape[2:]))
+                assert image_aug.shape == expected_shape
+
+    def test_pickleable(self):
+        aug = iaa.PadToAspectRatio(2.0, position="uniform", random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(10, 10, 1))
+
+
+class TestCenterPadToAspectRatio(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_3x3_image(self):
+        for _ in np.arange(10):
+            image = np.arange((3*3*3)).astype(np.uint8).reshape((3, 3, 3))
+            aug = iaa.CenterPadToAspectRatio(2.0)
+
+            observed = aug(image=image)
+
+            expected = iaa.pad(image, left=1, right=2)
+            assert np.array_equal(observed, expected)
+
+
+class TestCropToSquare(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_7x4_image(self):
+        image = np.arange((7*4*3)).astype(np.uint8).reshape((7, 4, 3))
+        aug = iaa.CropToSquare(position="center")
+
+        observed = aug(image=image)
+
+        assert np.array_equal(observed, image[1:5, 0:4, :])
+
+
+class TestCenterCropToSquare(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_7x4_image(self):
+        for _ in np.arange(10):
+            image = np.arange((7*4*3)).astype(np.uint8).reshape((7, 4, 3))
+            aug = iaa.CenterCropToSquare()
+
+            observed = aug(image=image)
+
+            assert np.array_equal(observed, image[1:5, 0:4, :])
+
+
+class TestPadToSquare(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_7x4_image(self):
+        image = np.arange((7*4*3)).astype(np.uint8).reshape((7, 4, 3))
+        aug = iaa.PadToSquare(position="center")
+
+        observed = aug(image=image)
+
+        expected = iaa.pad(image, left=1, right=2)
+        assert np.array_equal(observed, expected)
+
+
+class TestCenterPadToSquare(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test_on_7x4_image(self):
+        for _ in np.arange(10):
+            image = np.arange((7*4*3)).astype(np.uint8).reshape((7, 4, 3))
+            aug = iaa.CenterPadToSquare()
+
+            observed = aug(image=image)
+
+            expected = iaa.pad(image, left=1, right=2)
+            assert np.array_equal(observed, expected)
 
 
 class TestKeepSizeByResize(unittest.TestCase):
@@ -3709,6 +6694,103 @@ class TestKeepSizeByResize(unittest.TestCase):
         assert np.isclose(kpoi_aug.keypoints[2].x, 2, rtol=0, atol=1e-4)
         assert np.isclose(kpoi_aug.keypoints[2].y, 2, rtol=0, atol=1e-4)
 
+    def test_polygons_interpolation_is_cubic(self):
+        aug = iaa.KeepSizeByResize(self.children, interpolation="cubic")
+        cbaoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4, 3))
+
+        cbaoi_aug = aug.augment_polygons(cbaoi)
+
+        assert cbaoi_aug.shape == (4, 4, 3)
+        assert np.allclose(
+            cbaoi_aug.items[0].coords,
+            [(0, ((0-1)/3)*4),
+             (3, ((0-1)/3)*4),
+             (3, ((3-1)/3)*4)]
+        )
+
+    def test_polygons_interpolation_is_no_resize(self):
+        aug = iaa.KeepSizeByResize(
+            self.children, interpolation=iaa.KeepSizeByResize.NO_RESIZE)
+        cbaoi = ia.PolygonsOnImage([
+            ia.Polygon([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4, 3))
+
+        cbaoi_aug = aug.augment_polygons(cbaoi)
+
+        assert cbaoi_aug.shape == (3, 4, 3)
+        assert np.allclose(
+            cbaoi_aug.items[0].coords,
+            [(0, 0-1),
+             (3, 0-1),
+             (3, 3-1)]
+        )
+
+    def test_line_strings_interpolation_is_cubic(self):
+        aug = iaa.KeepSizeByResize(self.children, interpolation="cubic")
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4, 3))
+
+        cbaoi_aug = aug.augment_line_strings(cbaoi)
+
+        assert cbaoi_aug.shape == (4, 4, 3)
+        assert np.allclose(
+            cbaoi_aug.items[0].coords,
+            [(0, ((0-1)/3)*4),
+             (3, ((0-1)/3)*4),
+             (3, ((3-1)/3)*4)]
+        )
+
+    def test_line_strings_interpolation_is_no_resize(self):
+        aug = iaa.KeepSizeByResize(
+            self.children, interpolation=iaa.KeepSizeByResize.NO_RESIZE)
+        cbaoi = ia.LineStringsOnImage([
+            ia.LineString([(0, 0), (3, 0), (3, 3)])
+        ], shape=(4, 4, 3))
+
+        cbaoi_aug = aug.augment_line_strings(cbaoi)
+
+        assert cbaoi_aug.shape == (3, 4, 3)
+        assert np.allclose(
+            cbaoi_aug.items[0].coords,
+            [(0, 0-1),
+             (3, 0-1),
+             (3, 3-1)]
+        )
+
+    def test_bounding_boxes_interpolation_is_cubic(self):
+        aug = iaa.KeepSizeByResize(self.children, interpolation="cubic")
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=3, y2=4)
+        ], shape=(4, 4, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes(bbsoi)
+
+        assert bbsoi_aug.shape == (4, 4, 3)
+        assert np.allclose(
+            bbsoi_aug.bounding_boxes[0].coords,
+            [(0, ((1-1)/3)*4),
+             (3, ((4-1)/3)*4)]
+        )
+
+    def test_bounding_boxes_interpolation_is_no_resize(self):
+        aug = iaa.KeepSizeByResize(
+            self.children, interpolation=iaa.KeepSizeByResize.NO_RESIZE)
+        bbsoi = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1=0, y1=1, x2=3, y2=4)
+        ], shape=(4, 4, 3))
+
+        bbsoi_aug = aug.augment_bounding_boxes(bbsoi)
+
+        assert bbsoi_aug.shape == (3, 4, 3)
+        assert np.allclose(
+            bbsoi_aug.bounding_boxes[0].coords,
+            [(0, 1-1),
+             (3, 4-1)]
+        )
+
     def test_heatmaps_specific_interpolation_set_to_no_nearest(self):
         aug = iaa.KeepSizeByResize(
             self.children,
@@ -3833,3 +6915,27 @@ class TestKeepSizeByResize(unittest.TestCase):
                 image_aug = aug(image=image)
 
                 assert image_aug.shape == image.shape
+
+    def test_pickleable(self):
+        aug = iaa.KeepSizeByResize([
+            iaa.CropToFixedSize(10, 10, position="uniform", random_state=1)
+        ], interpolation=["nearest", "linear"], random_state=1)
+        runtest_pickleable_uint8_img(aug, iterations=5, shape=(15, 15, 1))
+
+    def test_get_children_lists(self):
+        child = iaa.Identity()
+        aug = iaa.KeepSizeByResize([child])
+        children_lsts = aug.get_children_lists()
+        assert len(children_lsts) == 1
+        assert len(children_lsts[0]) == 1
+        assert children_lsts[0][0] is child
+
+    def test_to_deterministic(self):
+        child = iaa.Identity()
+        aug = iaa.KeepSizeByResize([child])
+
+        aug_det = aug.to_deterministic()
+
+        assert aug_det.deterministic
+        assert aug_det.random_state is not aug.random_state
+        assert aug_det.children[0].deterministic

@@ -135,6 +135,12 @@ class TestPolygon___init__(unittest.TestCase):
         assert poly.label == "test"
 
 
+class TestPolygon_coords(unittest.TestCase):
+    def test_with_three_points(self):
+        poly = ia.Polygon([(0, 0), (1, 0.5), (1.5, 2.0)])
+        assert poly.coords is poly.exterior
+
+
 class TestPolygon_xx(unittest.TestCase):
     def test_filled_polygon(self):
         poly = ia.Polygon([(0, 0), (1, 0), (1.5, 0), (4.1, 1), (2.9, 2.0)])
@@ -233,13 +239,15 @@ class TestPolygon_area(unittest.TestCase):
 
     def test_polygon_with_two_points(self):
         poly = ia.Polygon([(0, 0), (1, 1)])
-        got_exception = False
-        try:
-            _ = poly.area
-        except Exception as exc:
-            assert "Cannot compute the polygon's area because" in str(exc)
-            got_exception = True
-        assert got_exception
+        assert np.isclose(poly.area, 0.0)
+
+    def test_polygon_with_one_point(self):
+        poly = ia.Polygon([(0, 0)])
+        assert np.isclose(poly.area, 0.0)
+
+    def test_polygon_with_zero_points(self):
+        poly = ia.Polygon([])
+        assert np.isclose(poly.area, 0.0)
 
 
 class TestPolygon_height(unittest.TestCase):
@@ -378,6 +386,103 @@ class TestPolygon_find_closest_point_idx(unittest.TestCase):
         poly = ia.Polygon([])
         with self.assertRaises(AssertionError):
             _ = poly.find_closest_point_index(x=0, y=0)
+
+
+class TestPolygon_compute_out_of_image_area(unittest.TestCase):
+    def test_fully_inside_image_plane(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        image_shape = (10, 20, 3)
+        area_ooi = poly.compute_out_of_image_area(image_shape)
+        assert np.isclose(area_ooi, 0.0)
+
+    def test_partially_outside_of_image_plane(self):
+        poly = ia.Polygon([(-1, 0), (1, 0), (1, 2), (-1, 2)])
+        image_shape = (10, 20, 3)
+        area_ooi = poly.compute_out_of_image_area(image_shape)
+        assert np.isclose(area_ooi, 2.0)
+
+    def test_fully_outside_of_image_plane(self):
+        poly = ia.Polygon([(-1, 0), (0, 0), (0, 1), (-1, 1)])
+        image_shape = (10, 20, 3)
+        area_ooi = poly.compute_out_of_image_area(image_shape)
+        assert np.isclose(area_ooi, 1.0)
+
+    def test_multiple_polygons_after_clip(self):
+        # two polygons inside the image area remain after clipping
+        # result is (area - poly1 - poly2) or here the part of the polygon
+        # that is left of the y-axis (x=0.0)
+        poly = ia.Polygon([(-10, 0), (5, 0), (5, 5), (-5, 5),
+                           (-5, 10), (5, 10),
+                           (5, 15), (-10, 15)])
+        image_shape = (15, 10, 3)
+
+        area_ooi = poly.compute_out_of_image_area(image_shape)
+
+        # the part left of the y-axis is not exactly square, but has a hole
+        # on its right (vertically centered), hence we have to subtract 5*5
+        assert np.isclose(area_ooi, 10*15 - 5*5)
+
+
+class TestPolygon_compute_out_of_image_fraction(unittest.TestCase):
+    def test_polygon_with_zero_points(self):
+        poly = ia.Polygon([])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_polygon_with_one_point(self):
+        poly = ia.Polygon([(1.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_polygon_with_one_point_ooi(self):
+        poly = ia.Polygon([(-1.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 1.0)
+
+    def test_polygon_with_two_points(self):
+        poly = ia.Polygon([(1.0, 1.0), (2.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_polygon_with_two_points_one_ooi(self):
+        poly = ia.Polygon([(9.0, 1.0), (11.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.5, atol=1e-3)
+
+    def test_polygon_with_three_points_as_line(self):
+        poly = ia.Polygon([(9.0, 1.0), (10.0, 1.0), (11.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.5, atol=1e-3)
+
+    def test_standard_polygon_not_ooi(self):
+        poly = ia.Polygon([(1.0, 1.0), (2.0, 1.0), (2.0, 2.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_standard_polygon_partially_ooi(self):
+        poly = ia.Polygon([(9.0, 1.0), (11.0, 1.0), (11.0, 3.0), (9.0, 3.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.5, atol=1e-3)
+
+    def test_standard_polygon_fully_ooi(self):
+        poly = ia.Polygon([(11.0, 1.0), (13.0, 1.0), (13.0, 3.0), (11.0, 3.0)])
+        image_shape = (10, 10, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 1.0)
+
+    def test_zero_sized_image_axes(self):
+        poly = ia.Polygon([(1.0, 1.0), (2.0, 1.0), (2.0, 2.0)])
+        image_shape = (0, 0, 3)
+        factor = poly.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 1.0)
 
 
 class TestPolygon_is_fully_within_image(unittest.TestCase):
@@ -1402,6 +1507,78 @@ class TestPolygon_change_first_point_by_index(unittest.TestCase):
         assert got_exception
 
 
+class TestPolygon_subdivide(unittest.TestCase):
+    def test_zero_points(self):
+        poly = ia.Polygon([])
+        poly_sub = poly.subdivide(1)
+        assert len(poly_sub.exterior) == 0
+
+    def test_one_point(self):
+        poly = ia.Polygon([(1, 1)])
+        poly_sub = poly.subdivide(1)
+        assert len(poly_sub.exterior) == 1
+
+    def test_two_points(self):
+        poly = ia.Polygon([(1, 2), (2, 4)])
+        poly_sub = poly.subdivide(1)
+        assert len(poly_sub.exterior) == 4
+        assert poly_sub.coords_almost_equals([
+            (1, 2),
+            (1.5, 3.0),
+            (2, 4),
+            (1.5, 3.0)
+        ])
+
+    def test_three_points(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        poly_sub = poly.subdivide(1)
+        assert len(poly_sub.exterior) == 6
+        assert poly_sub.coords_almost_equals([
+            (0, 0),
+            (0.5, 0.0),
+            (1, 0),
+            (1, 0.5),
+            (1, 1),
+            (0.5, 0.5)
+        ])
+
+    def test_three_points__n_points_0(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        poly_sub = poly.subdivide(0)
+        assert len(poly_sub.exterior) == 3
+        assert poly_sub.coords_almost_equals([
+            (0, 0),
+            (1, 0),
+            (1, 1),
+        ])
+
+    def test_three_points__n_points_2(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        poly_sub = poly.subdivide(2)
+        assert len(poly_sub.exterior) == 3+2*3
+        assert poly_sub.coords_almost_equals([
+            (0, 0),
+            (1/3, 0),
+            (2/3, 0),
+            (1, 0),
+            (1, 1/3),
+            (1, 2/3),
+            (1, 1),
+            (2/3, 2/3),
+            (1/3, 1/3)
+        ])
+
+    def test_label_none_is_preserved(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        poly_sub = poly.subdivide(1)
+        assert poly_sub.label is None
+
+    def test_label_str_is_preserved(self):
+        poly = ia.Polygon([(0, 0), (1, 0), (1, 1)], label="foo")
+        poly_sub = poly.subdivide(1)
+        assert poly_sub.label == "foo"
+
+
 class TestPolygon_to_shapely_line_string(unittest.TestCase):
     def test_three_point_polygon(self):
         poly = ia.Polygon([(0, 0), (1, 0), (1, 1)])
@@ -1677,6 +1854,33 @@ class TestPolygon___repr___and___str__(unittest.TestCase):
         assert poly.__str__() == expected
 
 
+class TestPolygon_coords_almost_equals(unittest.TestCase):
+    @mock.patch("imgaug.augmentables.polys.Polygon.exterior_almost_equals")
+    def test_calls_exterior_almost_equals(self, mock_eae):
+        mock_eae.return_value = "foo"
+        poly_a = ia.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+        poly_b = ia.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+
+        result = poly_a.coords_almost_equals(poly_b)
+
+        assert result == "foo"
+        mock_eae.assert_called_once_with(poly_b, max_distance=1e-4,
+                                         points_per_edge=8)
+
+    @mock.patch("imgaug.augmentables.polys.Polygon.exterior_almost_equals")
+    def test_calls_exterior_almost_equals__no_defaults(self, mock_eae):
+        mock_eae.return_value = "foo"
+        poly_a = ia.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+        poly_b = ia.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+
+        result = poly_a.coords_almost_equals(poly_b, max_distance=1,
+                                             points_per_edge=2)
+
+        assert result == "foo"
+        mock_eae.assert_called_once_with(poly_b, max_distance=1,
+                                         points_per_edge=2)
+
+
 class TestPolygon_exterior_almost_equals(unittest.TestCase):
     def test_exactly_same_exterior(self):
         # exactly same exterior
@@ -1807,7 +2011,7 @@ class TestPolygon_exterior_almost_equals(unittest.TestCase):
         poly_b = ia.Polygon([(0, 0), (1, 0)])
         assert not poly_a.exterior_almost_equals(poly_b)
 
-    def test_one_polygon_one_point_other_two_points(self):
+    def test_one_polygon_one_point_other_two_points_2(self):
         poly_a = ia.Polygon([(0, 0)])
         poly_b = ia.Polygon([(0, 0), (1, 0)])
         assert not poly_a.exterior_almost_equals(poly_b)
@@ -1935,9 +2139,38 @@ class TestPolygon_almost_equals(unittest.TestCase):
         poly_b = ia.Polygon([(0, 0), (1, 0), (0.5, 1)])
         assert not poly_a.almost_equals(poly_b)
 
-    def test_other_polygon_is_wrong_datatype(self):
-        poly_a = ia.Polygon([(0, 0)])
-        assert not poly_a.almost_equals("foo")
+
+class TestPolygon___getitem__(unittest.TestCase):
+    def test_with_three_points(self):
+        cba = ia.Polygon([(1, 2), (3, 4), (5, 5)])
+        assert np.allclose(cba[0], (1, 2))
+        assert np.allclose(cba[1], (3, 4))
+        assert np.allclose(cba[2], (5, 5))
+
+    def test_with_three_points_slice(self):
+        cba = ia.Polygon([(1, 2), (3, 4), (5, 5)])
+        assert np.allclose(cba[1:], [(3, 4), (5, 5)])
+
+
+class TestPolygon___iter__(unittest.TestCase):
+    def test_with_three_points(self):
+        cba = ia.Polygon([(1, 2), (3, 4), (5, 5)])
+        for i, xy in enumerate(cba):
+            assert i in [0, 1, 2]
+            if i == 0:
+                assert np.allclose(xy, (1, 2))
+            elif i == 1:
+                assert np.allclose(xy, (3, 4))
+            elif i == 2:
+                assert np.allclose(xy, (5, 5))
+        assert i == 2
+
+    def test_with_zero_points(self):
+        cba = ia.Polygon([])
+        i = 0
+        for xy in cba:
+            i += 1
+        assert i == 0
 
 
 # TODO add test for _convert_points_to_shapely_line_string
@@ -2015,6 +2248,27 @@ class TestPolygonsOnImage___init__(unittest.TestCase):
             shape=(10, 11)
         )
         assert poly_oi.shape == (10, 11)
+
+
+class TestPolygonsOnImage_items(unittest.TestCase):
+    def test_with_two_polygons(self):
+        poly1 = ia.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+        poly2 = ia.Polygon([(0, 0), (1, 0), (1, 1)])
+        psoi = ia.PolygonsOnImage(
+            [poly1, poly2],
+            shape=(10, 10, 3)
+        )
+
+        items = psoi.items
+
+        assert items == [poly1, poly2]
+
+    def test_items_empty(self):
+        psoi = ia.PolygonsOnImage([], shape=(40, 50, 3))
+
+        items = psoi.items
+
+        assert items == []
 
 
 class TestPolygonsOnImage_empty(unittest.TestCase):
@@ -2187,6 +2441,20 @@ class TestPolygonsOnImage_remove_out_of_image(unittest.TestCase):
         assert poly_oi_rm.shape == (10, 10, 3)
 
 
+class TestPolygonsOnImage_remove_out_of_image_fraction(unittest.TestCase):
+    def test_three_polygons(self):
+        item1 = ia.Polygon([(5, 1), (9, 1), (9, 2), (5, 2)])
+        item2 = ia.Polygon([(5, 1), (15, 1), (15, 2), (5, 2)])
+        item3 = ia.Polygon([(15, 1), (25, 1), (25, 2), (15, 2)])
+        cbaoi = ia.PolygonsOnImage([item1, item2, item3],
+                                   shape=(10, 10, 3))
+
+        cbaoi_reduced = cbaoi.remove_out_of_image_fraction(0.6)
+
+        assert len(cbaoi_reduced.items) == 2
+        assert cbaoi_reduced.items == [item1, item2]
+
+
 class TestPolygonsOnImage_clip_out_of_image(unittest.TestCase):
     # NOTE: clip_out_of_image() can change the order of points,
     # hence we check here for each expected point whether it appears
@@ -2289,6 +2557,204 @@ class TestPolygonsOnImage_shift(unittest.TestCase):
         assert poly_oi_shifted.shape == (10, 11, 3)
 
 
+class TestPolygonsOnImage_subdivide(unittest.TestCase):
+    def test_mocked(self):
+        poly_oi = ia.PolygonsOnImage(
+            [ia.Polygon([(1, 1), (8, 1), (8, 9), (1, 9)]),
+             ia.Polygon([(1, 1), (15, 1), (15, 9), (1, 9)])],
+            shape=(10, 11, 3))
+        mock_sub = mock.Mock()
+        mock_sub.return_value = "foo"
+        poly_oi.items[0].subdivide = mock_sub
+        poly_oi.items[1].subdivide = mock_sub
+
+        poly_oi_sub = poly_oi.subdivide(2)
+
+        assert mock_sub.call_count == 2
+        assert mock_sub.call_args_list[0][0][0] == 2
+        assert mock_sub.call_args_list[1][0][0] == 2
+        assert poly_oi_sub.items == ["foo", "foo"]
+
+    def test_with_zero_polygons(self):
+        poly_oi = ia.PolygonsOnImage([], shape=(10, 11, 3))
+        poly_oi_sub = poly_oi.subdivide(1)
+        assert len(poly_oi_sub.polygons) == 0
+        assert poly_oi_sub.shape == (10, 11, 3)
+
+    def test_with_one_polygon(self):
+        poly_oi = ia.PolygonsOnImage([ia.Polygon([(0, 0), (1, 0)])],
+                                     shape=(10, 11, 3))
+        poly_oi_sub = poly_oi.subdivide(1)
+        assert poly_oi_sub.shape == (10, 11, 3)
+        assert len(poly_oi_sub.items) == 1
+        assert poly_oi_sub.items[0].coords_almost_equals([
+            (0, 0),
+            (0.5, 0),
+            (1, 0),
+            (0.5, 0)
+        ])
+
+
+class TestPolygonsOnImage_to_xy_array(unittest.TestCase):
+    def test_filled_object(self):
+        psoi = ia.PolygonsOnImage(
+            [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+             ia.Polygon([(10, 10), (20, 0), (20, 20)])],
+            shape=(2, 2, 3))
+
+        xy_out = psoi.to_xy_array()
+
+        expected = np.float32([
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [10.0, 10.0],
+            [20.0, 0.0],
+            [20.0, 20.0]
+        ])
+        assert xy_out.shape == (6, 2)
+        assert np.allclose(xy_out, expected)
+        assert xy_out.dtype.name == "float32"
+
+    def test_empty_object(self):
+        psoi = ia.PolygonsOnImage(
+            [],
+            shape=(1, 2, 3))
+
+        xy_out = psoi.to_xy_array()
+
+        assert xy_out.shape == (0, 2)
+        assert xy_out.dtype.name == "float32"
+
+
+class TestPolygonsOnImage_fill_from_xy_array_(unittest.TestCase):
+    def test_empty_array(self):
+        xy = np.zeros((0, 2), dtype=np.float32)
+        psoi = ia.PolygonsOnImage([], shape=(2, 2, 3))
+
+        psoi = psoi.fill_from_xy_array_(xy)
+
+        assert len(psoi.polygons) == 0
+
+    def test_empty_list(self):
+        xy = []
+        psoi = ia.PolygonsOnImage([], shape=(2, 2, 3))
+
+        psoi = psoi.fill_from_xy_array_(xy)
+
+        assert len(psoi.polygons) == 0
+
+    def test_array_with_two_coords(self):
+        xy = np.array(
+            [(100, 100),
+             (101, 100),
+             (101, 101),
+             (110, 110),
+             (120, 100),
+             (120, 120)], dtype=np.float32)
+        psoi = ia.PolygonsOnImage(
+            [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+             ia.Polygon([(10, 10), (20, 0), (20, 20)])],
+            shape=(2, 2, 3))
+
+        psoi = psoi.fill_from_xy_array_(xy)
+
+        assert len(psoi.polygons) == 2
+        assert np.allclose(
+            psoi.polygons[0].coords,
+            [(100, 100), (101, 100), (101, 101)])
+        assert np.allclose(
+            psoi.polygons[1].coords,
+            [(110, 110), (120, 100), (120, 120)])
+
+    def test_list_with_two_coords(self):
+        xy = [(100, 100),
+              (101, 100),
+              (101, 101),
+              (110, 110),
+              (120, 100),
+              (120, 120)]
+        psoi = ia.PolygonsOnImage(
+            [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+             ia.Polygon([(10, 10), (20, 0), (20, 20)])],
+            shape=(2, 2, 3))
+
+        psoi = psoi.fill_from_xy_array_(xy)
+
+        assert len(psoi.polygons) == 2
+        assert np.allclose(
+            psoi.polygons[0].coords,
+            [(100, 100), (101, 100), (101, 101)])
+        assert np.allclose(
+            psoi.polygons[1].coords,
+            [(110, 110), (120, 100), (120, 120)])
+
+
+class TestPolygonsOnImage_to_keypoints_on_image(unittest.TestCase):
+    def test_filled_instance(self):
+        psoi = ia.PolygonsOnImage(
+            [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+             ia.Polygon([(10, 10), (20, 0), (20, 20)])],
+            shape=(1, 2, 3))
+
+        kpsoi = psoi.to_keypoints_on_image()
+
+        assert len(kpsoi.keypoints) == 2*3
+        assert kpsoi.keypoints[0].x == 0
+        assert kpsoi.keypoints[0].y == 0
+        assert kpsoi.keypoints[1].x == 1
+        assert kpsoi.keypoints[1].y == 0
+        assert kpsoi.keypoints[2].x == 1
+        assert kpsoi.keypoints[2].y == 1
+        assert kpsoi.keypoints[3].x == 10
+        assert kpsoi.keypoints[3].y == 10
+        assert kpsoi.keypoints[4].x == 20
+        assert kpsoi.keypoints[4].y == 0
+        assert kpsoi.keypoints[5].x == 20
+        assert kpsoi.keypoints[5].y == 20
+
+    def test_empty_instance(self):
+        psoi = ia.PolygonsOnImage([], shape=(1, 2, 3))
+
+        kpsoi = psoi.to_keypoints_on_image()
+
+        assert len(kpsoi.keypoints) == 0
+
+
+class TestPolygonsOnImage_invert_to_keypoints_on_image(unittest.TestCase):
+    def test_filled_instance(self):
+        psoi = ia.PolygonsOnImage(
+            [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+             ia.Polygon([(10, 10), (20, 0), (20, 20)])],
+            shape=(1, 2, 3))
+        kpsoi = ia.KeypointsOnImage(
+            [ia.Keypoint(100, 100), ia.Keypoint(101, 100),
+             ia.Keypoint(101, 101),
+             ia.Keypoint(110, 110), ia.Keypoint(120, 100),
+             ia.Keypoint(120, 120)],
+            shape=(10, 20, 30))
+
+        psoi_inv = psoi.invert_to_keypoints_on_image_(kpsoi)
+
+        assert len(psoi_inv.polygons) == 2
+        assert psoi_inv.shape == (10, 20, 30)
+        assert np.allclose(
+            psoi.polygons[0].coords,
+            [(100, 100), (101, 100), (101, 101)])
+        assert np.allclose(
+            psoi.polygons[1].coords,
+            [(110, 110), (120, 100), (120, 120)])
+
+    def test_empty_instance(self):
+        psoi = ia.PolygonsOnImage([], shape=(1, 2, 3))
+        kpsoi = ia.KeypointsOnImage([], shape=(10, 20, 30))
+
+        psoi_inv = psoi.invert_to_keypoints_on_image_(kpsoi)
+
+        assert len(psoi_inv.polygons) == 0
+        assert psoi_inv.shape == (10, 20, 30)
+
+
 class TestPolygonsOnImage_copy(unittest.TestCase):
     def test_with_two_polygons(self):
         poly_oi = ia.PolygonsOnImage(
@@ -2354,6 +2820,23 @@ class TestPolygonsOnImage_deepcopy(unittest.TestCase):
         assert np.allclose(poly_oi_copy.polygons[1].exterior,
                            [(100, 2), (16, 2), (16, 10), (2, 10)],
                            rtol=0, atol=1e-4)
+
+
+class TestPolygonsOnImage___iter__(unittest.TestCase):
+    def test_with_two_polygons(self):
+        cbas = [ia.Polygon([(0, 0), (1, 0), (1, 1)]),
+                ia.Polygon([(1, 0), (2, 2), (1.5, 3)])]
+        cbasoi = ia.PolygonsOnImage(cbas, shape=(40, 50, 3))
+
+        for i, cba in enumerate(cbasoi):
+            assert cba is cbas[i]
+
+    def test_with_zero_polygons(self):
+        cbasoi = ia.PolygonsOnImage([], shape=(40, 50, 3))
+        i = 0
+        for _cba in cbasoi:
+            i += 1
+        assert i == 0
 
 
 class TestPolygonsOnImage___repr___and___str__(unittest.TestCase):

@@ -29,13 +29,58 @@ from imgaug import augmenters as iaa
 from imgaug.testutils import reseed
 from imgaug.augmentables.batches import Batch, UnnormalizedBatch
 
+IS_PY2 = (sys.version_info[0] == 2)
+IS_PY3 = (sys.version_info[0] == 3)
+
+
+class Test__switch_to_spawn_if_nixos(unittest.TestCase):
+    @unittest.skipIf(IS_PY3,
+                     "Behaviour happens only in python 2")
+    @mock.patch("imgaug.imgaug.warn")
+    @mock.patch("platform.version")
+    def test_mocked_nixos_python2(self, mock_version, mock_warn):
+        from imgaug.multicore import _switch_to_spawn_if_nixos
+        mock_version.return_value = "NixOS"
+        _switch_to_spawn_if_nixos()
+        assert mock_warn.call_count == 1
+
+    @unittest.skipIf(IS_PY2,
+                     "Behaviour is only supported in python 3+")
+    @mock.patch("platform.version")
+    @mock.patch("multiprocessing.set_start_method")
+    def test_mocked_nixos_python3(self, mock_ssm, mock_version):
+        from imgaug.multicore import _switch_to_spawn_if_nixos
+        mock_version.return_value = "NixOS"
+        _switch_to_spawn_if_nixos()
+        mock_ssm.assert_called_once_with("spawn")
+
+    @unittest.skipIf(IS_PY2,
+                     "set_start_method() is only supported in python 3+ "
+                     "and hence cannot be mocked here.")
+    @mock.patch("platform.version")
+    @mock.patch("multiprocessing.set_start_method")
+    def test_mocked_no_nixos_python2(self, mock_ssm, mock_version):
+        from imgaug.multicore import _switch_to_spawn_if_nixos
+        mock_version.return_value = "foo"
+        _switch_to_spawn_if_nixos()
+        assert mock_ssm.call_count == 0
+
+    @unittest.skipIf(IS_PY3,
+                     "python 2 uses a simpler and more crude test than "
+                     "python 3")
+    @mock.patch("platform.version")
+    def test_mocked_no_nixos_python3(self, mock_version):
+        from imgaug.multicore import _switch_to_spawn_if_nixos
+        mock_version.return_value = "foo"
+        _switch_to_spawn_if_nixos()
+
 
 class TestPool(unittest.TestCase):
     def setUp(self):
         reseed()
 
     def test___init___seed_out_of_bounds(self):
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with self.assertRaises(AssertionError) as context:
             _ = multicore.Pool(augseq, seed=iarandom.SEED_MAX_VALUE + 100)
         assert "Expected `seed` to be" in str(context.exception)
@@ -46,7 +91,7 @@ class TestPool(unittest.TestCase):
         mock_Pool.close.return_value = None
         mock_Pool.join.return_value = None
         with mock.patch("multiprocessing.Pool", mock_Pool):
-            augseq = iaa.Noop()
+            augseq = iaa.Identity()
             pool_config = multicore.Pool(
                 augseq, processes=1, maxtasksperchild=4, seed=123)
             with pool_config as pool:
@@ -60,7 +105,7 @@ class TestPool(unittest.TestCase):
         assert mock_Pool.call_args[1]["maxtasksperchild"] == 4
 
     def test_processes(self):
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         mock_Pool = mock.MagicMock()
         mock_cpu_count = mock.Mock()
 
@@ -105,7 +150,7 @@ class TestPool(unittest.TestCase):
 
         mock_cpu_count.side_effect = _side_effect
 
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with warnings.catch_warnings(record=True) as caught_warnings:
             warnings.simplefilter("always")
             with multicore.Pool(augseq, processes=-1):
@@ -125,7 +170,7 @@ class TestPool(unittest.TestCase):
     @classmethod
     def _test_map_batches_both(cls, call_async):
         for clazz in [Batch, UnnormalizedBatch]:
-            augseq = iaa.Noop()
+            augseq = iaa.Identity()
             mock_Pool = mock.MagicMock()
             mock_Pool.return_value = mock_Pool
             mock_Pool.map.return_value = "X"
@@ -187,7 +232,7 @@ class TestPool(unittest.TestCase):
                 for batch in batches:
                     yield batch
 
-            augseq = iaa.Noop()
+            augseq = iaa.Identity()
             mock_Pool = mock.MagicMock()
             mock_Pool.return_value = mock_Pool
             mock_Pool.imap.return_value = batches
@@ -260,7 +305,7 @@ class TestPool(unittest.TestCase):
                 and np.all(ids_uq < len(batches))
             )
 
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with multicore.Pool(augseq, processes=1) as pool:
             # no output buffer limit, there should be no noteworthy lag
             # for any batch requested from _generate_batches()
@@ -489,7 +534,7 @@ class TestPool(unittest.TestCase):
                 assert idx in ids
             assert len(ids) == 200
 
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         image = np.zeros((1, 1, 1), dtype=np.uint8)
         # creates batches containing images with ids from 0 to 199 (one pair
         # of consecutive ids per batch)
@@ -519,17 +564,17 @@ class TestPool(unittest.TestCase):
             _assert_contains_all_ids(batches_aug)
 
     def test_close(self):
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with multicore.Pool(augseq, processes=2) as pool:
             pool.close()
 
     def test_terminate(self):
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with multicore.Pool(augseq, processes=2) as pool:
             pool.terminate()
 
     def test_join(self):
-        augseq = iaa.Noop()
+        augseq = iaa.Identity()
         with multicore.Pool(augseq, processes=2) as pool:
             pool.close()
             pool.join()
@@ -542,7 +587,7 @@ class TestPool(unittest.TestCase):
         # It is tested here again via some mocking.
         mock_pool.return_value = mock_pool
         mock_pool.join.return_value = True
-        with multicore.Pool(iaa.Noop(), processes=2) as pool:
+        with multicore.Pool(iaa.Identity(), processes=2) as pool:
             pool.join()
 
             # Make sure that __exit__ does not call close(), which would then
@@ -592,10 +637,10 @@ class Test_Pool_initialize_worker(unittest.TestCase):
 
         assert mock_time_ns.call_count == 1
         assert mock_ia_seed.call_count == 1
-        assert augseq.reseed.call_count == 1
+        assert augseq.seed_.call_count == 1
 
         seed_global = mock_ia_seed.call_args_list[0][0][0]
-        seed_local = augseq.reseed.call_args_list[0][0][0]
+        seed_local = augseq.seed_.call_args_list[0][0][0]
         assert seed_global != seed_local
 
     @mock.patch.object(sys, 'version_info')
@@ -620,10 +665,10 @@ class Test_Pool_initialize_worker(unittest.TestCase):
 
         assert mock_time.call_count == 1
         assert mock_ia_seed.call_count == 1
-        assert augseq.reseed.call_count == 1
+        assert augseq.seed_.call_count == 1
 
         seed_global = mock_ia_seed.call_args_list[0][0][0]
-        seed_local = augseq.reseed.call_args_list[0][0][0]
+        seed_local = augseq.seed_.call_args_list[0][0][0]
         assert seed_global != seed_local
 
     @mock.patch("imgaug.random.seed")
@@ -635,9 +680,9 @@ class Test_Pool_initialize_worker(unittest.TestCase):
         multicore._Pool_initialize_worker(augseq, None)
 
         seed_global_call_1 = mock_ia_seed.call_args_list[0][0][0]
-        seed_local_call_1 = augseq.reseed.call_args_list[0][0][0]
+        seed_local_call_1 = augseq.seed_.call_args_list[0][0][0]
         seed_global_call_2 = mock_ia_seed.call_args_list[0][0][0]
-        seed_local_call_2 = augseq.reseed.call_args_list[0][0][0]
+        seed_local_call_2 = augseq.seed_.call_args_list[0][0][0]
         assert (
             seed_global_call_1
             != seed_local_call_1
@@ -647,7 +692,7 @@ class Test_Pool_initialize_worker(unittest.TestCase):
             seed_global_call_1, seed_local_call_1,
             seed_global_call_2, seed_local_call_2)
         assert mock_ia_seed.call_count == 2
-        assert augseq.reseed.call_count == 2
+        assert augseq.seed_.call_count == 2
 
 
 # This should already be part of the Pool tests, but according to codecov
@@ -703,7 +748,7 @@ class Test_Pool_worker(unittest.TestCase):
         assert augseq.augment_batch.call_count == 1
         augseq.augment_batch.assert_called_once_with(batch)
         mock_ia_seed.assert_called_once_with(seed_global_expected)
-        augseq.reseed.assert_called_once_with(seed_local_expected)
+        augseq.seed_.assert_called_once_with(seed_local_expected)
 
 
 # This should already be part of the Pool tests, but according to codecov
@@ -812,7 +857,7 @@ class TestBackgroundAugmenter(unittest.TestCase):
             def gen():
                 yield ia.Batch(images=np.zeros((1, 4, 4, 3), dtype=np.uint8))
             bl = multicore.BatchLoader(gen(), queue_size=2)
-            bgaug = multicore.BackgroundAugmenter(bl, iaa.Noop(),
+            bgaug = multicore.BackgroundAugmenter(bl, iaa.Identity(),
                                                   queue_size=1, nb_workers=1)
 
             queue_source = multiprocessing.Queue(2)

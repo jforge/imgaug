@@ -334,6 +334,56 @@ class TestLineString(unittest.TestCase):
         ls_proj = ls.project((10, 10), (20, 20))
         assert ls_proj.coords.shape == (0, 2)
 
+    def test_compute_out_of_image_fraction__no_points(self):
+        ls = LineString([])
+        image_shape = (100, 200, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_compute_out_of_image_fraction__one_point(self):
+        ls = LineString([(1.0, 2.0)])
+        image_shape = (100, 200, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_compute_out_of_image_fraction__one_point__ooi(self):
+        ls = LineString([(-10.0, -20.0)])
+        image_shape = (100, 200, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 1.0)
+
+    def test_compute_out_of_image_fraction__two_points(self):
+        ls = LineString([(1.0, 2.0), (10.0, 20.0)])
+        image_shape = (100, 200, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.0)
+
+    def test_compute_out_of_image_fraction__three_points_at_same_pos(self):
+        ls = LineString([(10.0, 20.0), (10.0, 20.0), (10.0, 20.0)])
+        image_shape = (100, 200, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert len(ls.coords) == 3
+        assert np.isclose(factor, 0.0)
+
+    def test_compute_out_of_image_fraction__partially_ooi(self):
+        ls = LineString([(9.0, 1.0), (11.0, 1.0)])
+        image_shape = (10, 10, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.5, atol=1e-3)
+
+    def test_compute_out_of_image_fraction__leaves_image_multiple_times(self):
+        ls = LineString([(9.0, 1.0), (11.0, 1.0), (11.0, 3.0),
+                         (9.0, 3.0), (9.0, 5.0), (11.0, 5.0)])
+        image_shape = (10, 10, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 0.5, atol=1e-3)
+
+    def test_compute_out_of_image_fraction__fully_ooi(self):
+        ls = LineString([(15.0, 15.0), (20.0, 15.0)])
+        image_shape = (10, 10, 3)
+        factor = ls.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(factor, 1.0)
+
     def test_is_fully_within_image_with_simple_line_string(self):
         ls = LineString([(0, 0), (1, 0), (2, 1)])
         assert ls.is_fully_within_image((10, 10))
@@ -1663,6 +1713,32 @@ class TestLineString(unittest.TestCase):
                 # __str__() is tested more thoroughly in other tests
                 assert ls.__repr__() == ls.__str__()
 
+    def test___getitem__(self):
+        cba = ia.LineString([(0, 1), (2, 3)])
+        assert np.allclose(cba[0], (0, 1))
+        assert np.allclose(cba[1], (2, 3))
+
+    def test___getitem___slice(self):
+        cba = ia.LineString([(0, 1), (2, 3), (4, 5)])
+        assert np.allclose(cba[1:], [(2, 3), (4, 5)])
+
+    def test___iter___two_points(self):
+        cba = LineString([(1, 2), (3, 4)])
+        for i, xy in enumerate(cba):
+            assert i in [0, 1]
+            if i == 0:
+                assert np.allclose(xy, (1, 2))
+            elif i == 1:
+                assert np.allclose(xy, (3, 4))
+        assert i == 1
+
+    def test___iter___zero_points(self):
+        cba = LineString([])
+        i = 0
+        for xy in cba:
+            i += 1
+        assert i == 0
+
     def test___str__(self):
         coords = [
             [(0, 0), (1, 0), (1, 1)],
@@ -1690,6 +1766,10 @@ class TestLineString(unittest.TestCase):
                 assert observed == expected
 
 
+# TODO test to_keypoints_on_image()
+#      test invert_to_keypoints_on_image()
+#      test to_xy_array()
+#      test fill_from_xy_array_()
 class TestLineStringsOnImage(unittest.TestCase):
     def setUp(self):
         reseed()
@@ -1706,6 +1786,22 @@ class TestLineStringsOnImage(unittest.TestCase):
         lsoi = LineStringsOnImage([], shape=(10, 10))
         assert lsoi.line_strings == []
         assert lsoi.shape == (10, 10)
+
+    def test_items(self):
+        ls1 = LineString([(0, 0), (1, 0), (2, 1)])
+        ls2 = LineString([(10, 10)])
+        lsoi = LineStringsOnImage([ls1, ls2], shape=(100, 100, 3))
+
+        items = lsoi.items
+
+        assert items == [ls1, ls2]
+
+    def test_items_empty(self):
+        kpsoi = LineStringsOnImage([], shape=(40, 50, 3))
+
+        items = kpsoi.items
+
+        assert items == []
 
     def test_empty_with_empty_list(self):
         lsoi = LineStringsOnImage([], shape=(10, 10, 3))
@@ -1968,6 +2064,18 @@ class TestLineStringsOnImage(unittest.TestCase):
         assert observed.line_strings[0] is ls1
         assert observed.shape == (100, 100, 3)
 
+    def test_remove_out_of_image_fraction(self):
+        item1 = ia.LineString([(5, 1), (9, 1)])
+        item2 = ia.LineString([(5, 1), (15, 1)])
+        item3 = ia.LineString([(15, 1), (25, 1)])
+        cbaoi = ia.LineStringsOnImage([item1, item2, item3],
+                                      shape=(10, 10, 3))
+
+        cbaoi_reduced = cbaoi.remove_out_of_image_fraction(0.6)
+
+        assert len(cbaoi_reduced.items) == 2
+        assert cbaoi_reduced.items == [item1, item2]
+
     def test_clip_out_of_image_with_two_simple_line_strings(self):
         ls1 = LineString([(0, 0), (1, 0), (2, 1)])
         ls2 = LineString([(10, 10)])
@@ -2031,6 +2139,146 @@ class TestLineStringsOnImage(unittest.TestCase):
 
         assert len(observed.line_strings) == 0
         assert observed.shape == (100, 100, 3)
+
+    def test_to_xy_array(self):
+        lsoi = ia.LineStringsOnImage(
+            [ia.LineString([(0, 0), (1, 2)]),
+             ia.LineString([(10, 20), (30, 40)])],
+            shape=(1, 2, 3))
+
+        xy_out = lsoi.to_xy_array()
+
+        expected = np.float32([
+            [0.0, 0.0],
+            [1.0, 2.0],
+            [10.0, 20.0],
+            [30.0, 40.0]
+        ])
+        assert xy_out.shape == (4, 2)
+        assert np.allclose(xy_out, expected)
+        assert xy_out.dtype.name == "float32"
+
+    def test_to_xy_array__empty_object(self):
+        lsoi = ia.LineStringsOnImage(
+            [],
+            shape=(1, 2, 3))
+
+        xy_out = lsoi.to_xy_array()
+
+        assert xy_out.shape == (0, 2)
+        assert xy_out.dtype.name == "float32"
+
+    def test_fill_from_xy_array___empty_array(self):
+        xy = np.zeros((0, 2), dtype=np.float32)
+        lsoi = ia.LineStringsOnImage([], shape=(2, 2, 3))
+
+        lsoi = lsoi.fill_from_xy_array_(xy)
+
+        assert len(lsoi.line_strings) == 0
+
+    def test_fill_from_xy_array___empty_list(self):
+        xy = []
+        lsoi = ia.LineStringsOnImage([], shape=(2, 2, 3))
+
+        lsoi = lsoi.fill_from_xy_array_(xy)
+
+        assert len(lsoi.line_strings) == 0
+
+    def test_fill_from_xy_array___array_with_two_coords(self):
+        xy = np.array(
+            [(100, 101),
+             (102, 103),
+             (200, 201),
+             (202, 203)], dtype=np.float32)
+        lsoi = ia.LineStringsOnImage(
+            [ia.LineString([(0, 0), (1, 2)]),
+             ia.LineString([(10, 20), (30, 40)])],
+            shape=(2, 2, 3))
+
+        lsoi = lsoi.fill_from_xy_array_(xy)
+
+        assert len(lsoi.line_strings) == 2
+        assert np.allclose(
+            lsoi.line_strings[0].coords,
+            [(100, 101), (102, 103)])
+        assert np.allclose(
+            lsoi.line_strings[1].coords,
+            [(200, 201), (202, 203)])
+
+    def test_fill_from_xy_array___list_with_two_coords(self):
+        xy = [(100, 101),
+              (102, 103),
+              (200, 201),
+              (202, 203)]
+        lsoi = ia.LineStringsOnImage(
+            [ia.LineString([(0, 0), (1, 2)]),
+             ia.LineString([(10, 20), (30, 40)])],
+            shape=(2, 2, 3))
+
+        lsoi = lsoi.fill_from_xy_array_(xy)
+
+        assert len(lsoi.line_strings) == 2
+        assert np.allclose(
+            lsoi.line_strings[0].coords,
+            [(100, 101), (102, 103)])
+        assert np.allclose(
+            lsoi.line_strings[1].coords,
+            [(200, 201), (202, 203)])
+
+    def test_to_keypoints_on_image(self):
+        lsoi = ia.LineStringsOnImage(
+            [ia.LineString([(0, 0), (1, 2)]),
+             ia.LineString([(10, 20), (30, 40)])],
+            shape=(1, 2, 3))
+
+        kpsoi = lsoi.to_keypoints_on_image()
+
+        assert len(kpsoi.keypoints) == 2*2
+        assert kpsoi.keypoints[0].x == 0
+        assert kpsoi.keypoints[0].y == 0
+        assert kpsoi.keypoints[1].x == 1
+        assert kpsoi.keypoints[1].y == 2
+        assert kpsoi.keypoints[2].x == 10
+        assert kpsoi.keypoints[2].y == 20
+        assert kpsoi.keypoints[3].x == 30
+        assert kpsoi.keypoints[3].y == 40
+
+    def test_to_keypoints_on_image__empty_instance(self):
+        lsoi = ia.LineStringsOnImage([], shape=(1, 2, 3))
+
+        kpsoi = lsoi.to_keypoints_on_image()
+
+        assert len(kpsoi.keypoints) == 0
+
+    def test_invert_to_keypoints_on_image_(self):
+        lsoi = ia.LineStringsOnImage(
+            [ia.LineString([(0, 0), (1, 2)]),
+             ia.LineString([(10, 20), (30, 40)])],
+            shape=(1, 2, 3))
+        kpsoi = ia.KeypointsOnImage(
+            [ia.Keypoint(100, 101), ia.Keypoint(102, 103),
+             ia.Keypoint(110, 120), ia.Keypoint(130, 140)],
+            shape=(10, 20, 30))
+
+        lsoi_inv = lsoi.invert_to_keypoints_on_image_(kpsoi)
+
+        assert len(lsoi_inv.line_strings) == 2
+        assert lsoi_inv.shape == (10, 20, 30)
+        assert np.allclose(
+            lsoi.line_strings[0].coords,
+            [(100, 101), (102, 103)])
+        assert np.allclose(
+            lsoi.line_strings[1].coords,
+            [(110, 120), (130, 140)])
+
+    def test_invert_to_keypoints_on_image___empty_instance(self):
+        lsoi = ia.LineStringsOnImage([], shape=(1, 2, 3))
+        kpsoi = ia.KeypointsOnImage([], shape=(10, 20, 30))
+
+        lsoi_inv = lsoi.invert_to_keypoints_on_image_(kpsoi)
+
+        assert len(lsoi_inv.line_strings) == 0
+        assert lsoi_inv.shape == (10, 20, 30)
 
     def test_copy_with_two_line_strings(self):
         # basic test, without labels
@@ -2177,6 +2425,21 @@ class TestLineStringsOnImage(unittest.TestCase):
 
         assert observed.line_strings == []
         assert observed.shape == (200, 201, 3)
+
+    def test___iter__(self):
+        cbas = [ia.LineString([(0, 0), (1, 1)]),
+                ia.LineString([(1, 2), (3, 4)])]
+        cbasoi = ia.LineStringsOnImage(cbas, shape=(40, 50, 3))
+
+        for i, cba in enumerate(cbasoi):
+            assert cba is cbas[i]
+
+    def test___iter___empty(self):
+        cbasoi = ia.LineStringsOnImage([], shape=(40, 50, 3))
+        i = 0
+        for _cba in cbasoi:
+            i += 1
+        assert i == 0
 
     def test___repr__(self):
         def _func(obj):

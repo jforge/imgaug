@@ -35,6 +35,11 @@ class TestKeypoint(unittest.TestCase):
         assert np.isclose(kp.y, 1.5)
         assert np.isclose(kp.x, 2.5)
 
+    def test_coords(self):
+        kp = ia.Keypoint(x=1, y=1.5)
+        coords = kp.coords
+        assert np.allclose(coords, [1, 1.5], atol=1e-8, rtol=0)
+
     def test_x_int(self):
         kp = ia.Keypoint(y=1, x=2)
         assert kp.x == 2
@@ -54,6 +59,16 @@ class TestKeypoint(unittest.TestCase):
         kp = ia.Keypoint(y=1.7, x=2)
         assert np.isclose(kp.y, 1.7)
         assert kp.y_int == 2
+
+    def test_xy(self):
+        kp = ia.Keypoint(x=2, y=1.7)
+        assert np.allclose(kp.xy, (2, 1.7))
+
+    def test_xy_int(self):
+        kp = ia.Keypoint(x=1.3, y=1.6)
+        xy = kp.xy_int
+        assert np.allclose(xy, (1, 2))
+        assert xy.dtype.name == "int32"
 
     def test_project_same_image_size(self):
         kp = ia.Keypoint(y=1, x=2)
@@ -78,6 +93,42 @@ class TestKeypoint(unittest.TestCase):
         kp2 = kp.project((10, 10), (20, 20))
         assert kp2.y == 2
         assert kp2.x == 4
+
+    def test_is_out_of_image(self):
+        kp = ia.Keypoint(y=1, x=2)
+        image_shape = (10, 20, 3)
+        ooi = kp.is_out_of_image(image_shape)
+        assert not ooi
+
+    def test_is_out_of_image__ooi_y(self):
+        kp = ia.Keypoint(y=11, x=2)
+        image_shape = (10, 20, 3)
+        ooi = kp.is_out_of_image(image_shape)
+        assert ooi
+
+    def test_is_out_of_image__ooi_x(self):
+        kp = ia.Keypoint(y=1, x=21)
+        image_shape = (10, 20, 3)
+        ooi = kp.is_out_of_image(image_shape)
+        assert ooi
+
+    def test_compute_out_of_image_fraction(self):
+        kp = ia.Keypoint(y=1, x=2)
+        image_shape = (10, 20, 3)
+        fraction = kp.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(fraction, 0.0)
+
+    def test_compute_out_of_image_fraction_ooi_y(self):
+        kp = ia.Keypoint(y=11, x=2)
+        image_shape = (10, 20, 3)
+        fraction = kp.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(fraction, 1.0)
+
+    def test_compute_out_of_image_fraction_ooi_x(self):
+        kp = ia.Keypoint(y=1, x=21)
+        image_shape = (10, 20, 3)
+        fraction = kp.compute_out_of_image_fraction(image_shape)
+        assert np.isclose(fraction, 1.0)
 
     def test_shift_on_y_axis(self):
         kp = ia.Keypoint(y=1, x=2)
@@ -219,6 +270,81 @@ class TestKeypoint(unittest.TestCase):
                 in kps_manhatten
             ])
 
+    def test_coords_almost_equals(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = ia.Keypoint(x=1, y=1.5)
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert equal
+
+    def test_coords_almost_equals__unequal(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = ia.Keypoint(x=1, y=1.5+10.0)
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert not equal
+
+    def test_coords_almost_equals__distance_below_threshold(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = ia.Keypoint(x=1, y=1.5+1e-2)
+
+        equal = kp1.coords_almost_equals(kp2, max_distance=1e-1)
+
+        assert equal
+
+    def test_coords_almost_equals__distance_exceeds_threshold(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = ia.Keypoint(x=1, y=1.5+1e-2)
+
+        equal = kp1.coords_almost_equals(kp2, max_distance=1e-3)
+
+        assert not equal
+
+    def test_coords_almost_equals__array(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = np.float32([1, 1.5])
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert equal
+
+    def test_coords_almost_equals__array_unequal(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = np.float32([1, 1.5+1.0])
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert not equal
+
+    def test_coords_almost_equals__tuple(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = (1, 1.5)
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert equal
+
+    def test_coords_almost_equals__tuple_unequal(self):
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = (1, 1.5+1.0)
+
+        equal = kp1.coords_almost_equals(kp2)
+
+        assert not equal
+
+    @mock.patch("imgaug.augmentables.kps.Keypoint.coords_almost_equals")
+    def test_almost_equals(self, mock_cae):
+        mock_cae.return_value = "foo"
+        kp1 = ia.Keypoint(x=1, y=1.5)
+        kp2 = ia.Keypoint(x=1, y=1.5)
+
+        result = kp1.almost_equals(kp2, max_distance=2)
+
+        assert result == "foo"
+        mock_cae.assert_called_once_with(kp2, max_distance=2)
+
     def test_string_conversion_ints(self):
         kp = ia.Keypoint(y=1, x=2)
         assert (
@@ -237,6 +363,21 @@ class TestKeypoint(unittest.TestCase):
 
 
 class TestKeypointsOnImage(unittest.TestCase):
+    def test_items(self):
+        kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]
+        kpsoi = ia.KeypointsOnImage(kps, shape=(40, 50, 3))
+
+        items = kpsoi.items
+
+        assert items == kps
+
+    def test_items_empty(self):
+        kpsoi = ia.KeypointsOnImage([], shape=(40, 50, 3))
+
+        items = kpsoi.items
+
+        assert items == []
+
     def test_height(self):
         kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]
         kpi = ia.KeypointsOnImage(keypoints=kps, shape=(10, 20, 3))
@@ -467,6 +608,29 @@ class TestKeypointsOnImage(unittest.TestCase):
 
         assert "Cannot draw keypoint" in str(context.exception)
 
+    @classmethod
+    def _test_clip_remove_frac(cls, func):
+        item1 = ia.Keypoint(x=5, y=1)
+        item2 = ia.Keypoint(x=15, y=1)
+        cbaoi = ia.KeypointsOnImage([item1, item2], shape=(10, 10, 3))
+
+        cbaoi_reduced = func(cbaoi)
+
+        assert len(cbaoi_reduced.items) == 1
+        assert cbaoi_reduced.items == [item1]
+
+    def test_remove_out_of_image_fraction(self):
+        def _func(cbaoi):
+            return cbaoi.remove_out_of_image_fraction(0.6)
+
+        self._test_clip_remove_frac(_func)
+
+    def test_clip_out_of_image_fraction(self):
+        def _func(cbaoi):
+            return cbaoi.clip_out_of_image()
+
+        self._test_clip_remove_frac(_func)
+
     def test_shift_by_zero_on_both_axis(self):
         kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]
         kpi = ia.KeypointsOnImage(keypoints=kps, shape=(5, 5, 3))
@@ -555,6 +719,48 @@ class TestKeypointsOnImage(unittest.TestCase):
         assert np.isclose(kpi.keypoints[0].y, 2)
         assert np.isclose(kpi.keypoints[1].x, 3)
         assert np.isclose(kpi.keypoints[1].y, 4)
+
+    def test_fill_from_xy_array___empty_array(self):
+        xy = np.zeros((0, 2), dtype=np.float32)
+        kps = ia.KeypointsOnImage([], shape=(2, 2, 3))
+
+        kps = kps.fill_from_xy_array_(xy)
+
+        assert len(kps.keypoints) == 0
+
+    def test_fill_from_xy_array___empty_list(self):
+        xy = []
+        kps = ia.KeypointsOnImage([], shape=(2, 2, 3))
+
+        kps = kps.fill_from_xy_array_(xy)
+
+        assert len(kps.keypoints) == 0
+
+    def test_fill_from_xy_array___array_with_two_coords(self):
+        xy = np.array([(0, 0), (1, 2)], dtype=np.float32)
+        kps = ia.KeypointsOnImage([ia.Keypoint(10, 20), ia.Keypoint(30, 40)],
+                                  shape=(2, 2, 3))
+
+        kps = kps.fill_from_xy_array_(xy)
+
+        assert len(kps.keypoints) == 2
+        assert kps.keypoints[0].x == 0
+        assert kps.keypoints[0].y == 0
+        assert kps.keypoints[1].x == 1
+        assert kps.keypoints[1].y == 2
+
+    def test_fill_from_xy_array___list_with_two_coords(self):
+        xy = [(0, 0), (1, 2)]
+        kps = ia.KeypointsOnImage([ia.Keypoint(10, 20), ia.Keypoint(30, 40)],
+                                  shape=(2, 2, 3))
+
+        kps = kps.fill_from_xy_array_(xy)
+
+        assert len(kps.keypoints) == 2
+        assert kps.keypoints[0].x == 0
+        assert kps.keypoints[0].y == 0
+        assert kps.keypoints[1].x == 1
+        assert kps.keypoints[1].y == 2
 
     def test_to_keypoint_image_size_1(self):
         kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]
@@ -873,6 +1079,32 @@ class TestKeypointsOnImage(unittest.TestCase):
 
         assert "Expected if_not_found_coords to be" in str(context.exception)
 
+    def test_to_keypoints_on_image(self):
+        kps = ia.KeypointsOnImage([ia.Keypoint(0, 0), ia.Keypoint(1, 2)],
+                                  shape=(1, 2, 3))
+        kps.deepcopy = mock.MagicMock()
+        kps.deepcopy.return_value = "foo"
+
+        kps_cp = kps.to_keypoints_on_image()
+
+        assert kps.deepcopy.call_count == 1
+        assert kps_cp == "foo"
+
+    def test_invert_to_keypoints_on_image_(self):
+        kps1 = ia.KeypointsOnImage([ia.Keypoint(0, 0), ia.Keypoint(1, 2)],
+                                   shape=(2, 3, 4))
+        kps2 = ia.KeypointsOnImage([ia.Keypoint(10, 10), ia.Keypoint(11, 12)],
+                                   shape=(3, 4, 5))
+
+        kps3 = kps1.invert_to_keypoints_on_image_(kps2)
+
+        assert kps3 is not kps2
+        assert kps3.shape == (3, 4, 5)
+        assert kps3.keypoints[0].x == 10
+        assert kps3.keypoints[0].y == 10
+        assert kps3.keypoints[1].x == 11
+        assert kps3.keypoints[1].y == 12
+
     def test_copy(self):
         kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]
         kpi = ia.KeypointsOnImage(keypoints=kps, shape=(5, 5, 3))
@@ -908,6 +1140,21 @@ class TestKeypointsOnImage(unittest.TestCase):
         assert kpi2.keypoints[0].y == 2
         assert kpi2.keypoints[1].x == 3
         assert kpi2.keypoints[1].y == 4
+
+    def test___iter__(self):
+        cbas = [ia.Keypoint(x=1, y=2),
+                ia.Keypoint(x=3, y=4)]
+        cbasoi = ia.KeypointsOnImage(cbas, shape=(40, 50, 3))
+
+        for i, cba in enumerate(cbasoi):
+            assert cba is cbas[i]
+
+    def test___iter___empty(self):
+        cbasoi = ia.KeypointsOnImage([], shape=(40, 50, 3))
+        i = 0
+        for _cba in cbasoi:
+            i += 1
+        assert i == 0
 
     def test_string_conversion(self):
         kps = [ia.Keypoint(x=1, y=2), ia.Keypoint(x=3, y=4)]

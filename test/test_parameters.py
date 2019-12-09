@@ -403,6 +403,89 @@ class Test_handle_discrete_param(unittest.TestCase):
             "Unexpected input for value_range" in str(context.exception))
 
 
+class Test_handle_categorical_string_param(unittest.TestCase):
+    def test_arg_is_all(self):
+        valid_values = ["class1", "class2"]
+
+        param = iap.handle_categorical_string_param(
+            ia.ALL, "foo", valid_values)
+
+        assert isinstance(param, iap.Choice)
+        assert param.a == valid_values
+
+    def test_arg_is_valid_str(self):
+        valid_values = ["class1", "class2"]
+
+        param = iap.handle_categorical_string_param(
+            "class1", "foo", valid_values)
+
+        assert isinstance(param, iap.Deterministic)
+        assert param.value == "class1"
+
+    def test_arg_is_invalid_str(self):
+        valid_values = ["class1", "class2"]
+
+        with self.assertRaises(AssertionError) as ctx:
+            _param = iap.handle_categorical_string_param(
+                "class3", "foo", valid_values)
+
+        expected = (
+            "Expected parameter 'foo' to be one of: class1, class2. "
+            "Got: class3.")
+        assert expected == str(ctx.exception)
+
+    def test_arg_is_valid_list(self):
+        valid_values = ["class1", "class2", "class3"]
+
+        param = iap.handle_categorical_string_param(
+            ["class1", "class3"], "foo", valid_values)
+
+        assert isinstance(param, iap.Choice)
+        assert param.a == ["class1", "class3"]
+
+    def test_arg_is_list_with_invalid_types(self):
+        valid_values = ["class1", "class2", "class3"]
+
+        with self.assertRaises(AssertionError) as ctx:
+            _param = iap.handle_categorical_string_param(
+                ["class1", False], "foo", valid_values)
+
+        expected = (
+            "Expected list provided for parameter 'foo' to only contain "
+            "strings, got types: str, bool."
+        )
+        assert expected in str(ctx.exception)
+
+    def test_arg_is_invalid_list(self):
+        valid_values = ["class1", "class2", "class3"]
+
+        with self.assertRaises(AssertionError) as ctx:
+            _param = iap.handle_categorical_string_param(
+                ["class1", "class4"], "foo", valid_values)
+
+        expected = (
+            "Expected list provided for parameter 'foo' to only contain "
+            "the following allowed strings: class1, class2, class3. "
+            "Got strings: class1, class4."
+        )
+        assert expected in str(ctx.exception)
+
+    def test_arg_is_stochastic_param(self):
+        param = iap.Deterministic("class1")
+
+        param_out = iap.handle_categorical_string_param(
+            param, "foo", ["class1"])
+
+        assert param_out is param
+
+    def test_arg_is_invalid_datatype(self):
+        with self.assertRaises(Exception) as ctx:
+            _ = iap.handle_categorical_string_param(
+                False, "foo", ["class1"])
+
+        expected = "Expected parameter 'foo' to be imgaug.ALL"
+        assert expected in str(ctx.exception)
+
 class Test_handle_probability_param(unittest.TestCase):
     def test_bool_like_values(self):
         for val in [True, False, 0, 1, 0.0, 1.0]:
@@ -2172,6 +2255,140 @@ class TestDeterministic(unittest.TestCase):
             in str(context.exception))
 
 
+class TestDeterministicList(unittest.TestCase):
+    def setUp(self):
+        reseed()
+
+    def test___init___with_array(self):
+        values = np.arange(1*2*3).reshape((1, 2, 3))
+        param = iap.DeterministicList(values)
+        assert np.array_equal(param.values, values.flatten())
+
+    def test___init___with_list_int(self):
+        values = [[1, 2], [3, 4]]
+        param = iap.DeterministicList(values)
+        assert np.array_equal(param.values, [1, 2, 3, 4])
+        assert param.values.dtype.name == "int32"
+
+    def test___init___with_list_float(self):
+        values = [[1.1, 2.2], [3.3, 4.4]]
+        param = iap.DeterministicList(values)
+        assert np.allclose(param.values, [1.1, 2.2, 3.3, 4.4])
+        assert param.values.dtype.name == "float32"
+
+    def test_samples_same_values_for_same_seeds(self):
+        values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110]
+        param = iap.DeterministicList(values)
+
+        rs1 = iarandom.RNG(123456)
+        rs2 = iarandom.RNG(123456)
+
+        samples1 = param.draw_samples(10, random_state=rs1)
+        samples2 = param.draw_samples(10, random_state=rs2)
+
+        assert np.array_equal(samples1, samples2)
+
+    def test_draw_sample_int(self):
+        values = [10, 20, 30, 40, 50]
+        param = iap.DeterministicList(values)
+
+        sample1 = param.draw_sample()
+        sample2 = param.draw_sample()
+
+        assert sample1.shape == tuple()
+        assert sample1 == sample2
+
+    def test_draw_sample_float(self):
+        values = [10.1, 20.2, 30.3, 40.4, 50.5]
+        param = iap.DeterministicList(values)
+
+        sample1 = param.draw_sample()
+        sample2 = param.draw_sample()
+
+        assert sample1.shape == tuple()
+        assert np.isclose(
+            sample1, sample2, rtol=0, atol=_eps(sample1))
+
+    def test_draw_samples_int(self):
+        values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        shapes = [3, (2, 3), (2, 3, 1)]
+        expecteds = [
+            [10, 20, 30],
+            [[10, 20, 30], [40, 50, 60]],
+            [[[10], [20], [30]], [[40], [50], [60]]]
+        ]
+        param = iap.DeterministicList(values)
+        for shape, expected in zip(shapes, expecteds):
+            with self.subTest(shape=shape):
+                samples = param.draw_samples(shape)
+
+                shape_expected = (
+                    shape
+                    if isinstance(shape, tuple)
+                    else tuple([shape]))
+
+                assert samples.shape == shape_expected
+                assert np.array_equal(samples, expected)
+
+    def test_draw_samples_float(self):
+        values = [10.1, 20.2, 30.3, 40.4, 50.5, 60.6, 70.7, 80.8, 90.9, 100.10]
+        shapes = [3, (2, 3), (2, 3, 1)]
+        expecteds = [
+            [10.1, 20.2, 30.3],
+            [[10.1, 20.2, 30.3], [40.4, 50.5, 60.6]],
+            [[[10.1], [20.2], [30.3]], [[40.4], [50.5], [60.6]]]
+        ]
+        param = iap.DeterministicList(values)
+        for shape, expected in zip(shapes, expecteds):
+            with self.subTest(shape=shape):
+                samples = param.draw_samples(shape)
+
+                shape_expected = (
+                    shape
+                    if isinstance(shape, tuple)
+                    else tuple([shape]))
+
+                assert samples.shape == shape_expected
+                assert np.allclose(samples, expected, rtol=0, atol=1e-5)
+
+    def test_draw_samples_cycles_when_shape_too_large(self):
+        values = [10, 20, 30]
+        param = iap.DeterministicList(values)
+
+        shapes = [(6,), (7,), (8,), (9,), (3, 3)]
+        expecteds = [
+            [10, 20, 30, 10, 20, 30],
+            [10, 20, 30, 10, 20, 30, 10],
+            [10, 20, 30, 10, 20, 30, 10, 20],
+            [10, 20, 30, 10, 20, 30, 10, 20, 30],
+            [[10, 20, 30],
+             [10, 20, 30],
+             [10, 20, 30]]
+        ]
+
+        for shape, expected in zip(shapes, expecteds):
+            with self.subTest(shape=shape):
+                samples = param.draw_samples(shape)
+
+                assert np.array_equal(samples, expected)
+
+    def test___str___and___repr___float(self):
+        param = iap.DeterministicList([10.1, 20.2, 30.3])
+        assert (
+            param.__str__()
+            == param.__repr__()
+            == "DeterministicList([10.1000, 20.2000, 30.3000])"
+        )
+
+    def test___str___and___repr___intlike(self):
+        param = iap.DeterministicList([10, 20, 30])
+        assert (
+            param.__str__()
+            == param.__repr__()
+            == "DeterministicList([10, 20, 30])"
+        )
+
+
 class TestFromLowerResolution(unittest.TestCase):
     def setUp(self):
         reseed()
@@ -2260,9 +2477,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(100):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
@@ -2285,9 +2502,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(400):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
@@ -2312,9 +2529,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(100):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
@@ -2345,9 +2562,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(100):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
@@ -2370,9 +2587,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(100):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
@@ -2397,9 +2614,9 @@ class TestFromLowerResolution(unittest.TestCase):
         for _ in sm.xrange(100):
             samples1 = param1.draw_samples((16, 16, 1))
             samples2 = param2.draw_samples((16, 16, 1))
-            _, num1 = skimage.morphology.label(samples1, neighbors=4,
+            _, num1 = skimage.morphology.label(samples1, connectivity=1,
                                                background=0, return_num=True)
-            _, num2 = skimage.morphology.label(samples2, neighbors=4,
+            _, num2 = skimage.morphology.label(samples2, connectivity=1,
                                                background=0, return_num=True)
             seen_components[0] += num1
             seen_components[1] += num2
